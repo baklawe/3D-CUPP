@@ -2,6 +2,13 @@
 This will be the best project ever
 
 we also have boxes:
-- [x] something
-- [x] something
-- [ ] something
+- First task
+  - [ ] implement a good version of pointnet
+  - [ ] implement implement the suplumentry code ( need to expand)
+- second task
+  - [ ] create a projection network
+  - [ ] projection data base
+  - [ ] more stuff
+- Third task 
+  - [ ] combining things
+- [ ] we also need to order some good pizza
