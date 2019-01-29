@@ -2,7 +2,5 @@
 This will be the best project ever
 we also have boxes:
 - [x] something
-  - 
-- [x] something
 - [x] something
 - [ ] something
