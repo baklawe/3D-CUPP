@@ -3,8 +3,8 @@ This will be the best project ever
 
 we also have boxes:
 - First task
-  - [ X ] implement a good version of pointnet
-  - [ ] implement implement the suplumentry code ( need to expand)
+  - [] implement a good version of pointnet
+  - [] implement implement the suplumentry code ( need to expand)
 - second task
   - [ ] create a projection network
   - [ ] projection data base
