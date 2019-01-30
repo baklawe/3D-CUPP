@@ -98,7 +98,7 @@ def loss_to_percentage(loss: float) -> float:
     return res
 
 
-class IntrinsicLearnerTrainer:
+class PointNetTrainer:
     def __init__(self, model: IntrinsicLearner, loss: IntrinsicLearnerLoss, optimizer):
         self.model = model
         self.loss = loss
