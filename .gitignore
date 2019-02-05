@@ -1,2 +1,5 @@
 .idea/
 data/
+model/playtime.py
+model/results/
+model/__pycache__/

@@ -1,6 +1,4 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class View1D(nn.Module):
@@ -18,7 +16,7 @@ class View1D(nn.Module):
 class PointNet(nn.Module):
     def __init__(self):
         """
-        Input dim: (B, 3, N) represents batch of N (usually 1024) (x, y, z).
+        Input dim: (B, 3, N) represents batch of N (usually N=1024) (x, y, z).
         After Conv1d filters: (B, 1024, N).
         After pooling: (B, 1024, 1).
         After View: (B, 1024).
@@ -40,9 +38,8 @@ class PointNet(nn.Module):
                            nn.BatchNorm1d(out_affine)])
         modules.append(nn.Dropout(p=0.7))
         modules.append(nn.Linear(affine[-2], affine[-1]))
+        modules.append(nn.LogSoftmax(dim=-1))
         self.seq = nn.Sequential(*modules)
 
     def forward(self, x):
         return self.seq(x)
-
-
