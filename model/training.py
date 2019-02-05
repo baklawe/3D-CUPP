@@ -132,7 +132,7 @@ class PointNetTrainer:
                 saved_state = torch.load(checkpoint_filename, map_location=self.device)
                 self.model.load_state_dict(saved_state['model_state'])
                 fit_res = saved_state.get('fit_res', fit_res)
-                start_epoch += len(fit_res.test_corr)
+                start_epoch += len(fit_res.test_loss)
 
         for epoch in range(start_epoch, num_epochs+1):
             print(f'--- EPOCH {epoch}/{num_epochs} ---')

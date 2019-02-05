@@ -12,7 +12,7 @@ import training
 import model
 
 
-def run_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=1e-4):
+def run_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=7, lr=1e-3, l2_reg=1e-4):
 
     if not seed:
         seed = random.randint(0, 2**31)
