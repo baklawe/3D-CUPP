@@ -11,6 +11,8 @@ from typing import NamedTuple, List
 from torch.utils.data import Dataset
 
 import matplotlib.pyplot as plt
+import numpy as np
+import cv2 as cv
 
 
 def load_h5(h5_filename):
@@ -76,6 +78,84 @@ class ModelNet40Test(Dataset):
         modelnet40 train composed of 5 h5 files, each contains 2048 examples except for the last one which has 1648
         """
         return 2048 + 420
+
+
+class PicNet40Train(ModelNet40Train):
+    def __init__(self):
+        super().__init__()
+        self.size = 28
+        self.r_lst = [(0, 0, 0), (-np.pi, 0, 0), (0, 0.5*np.pi, 0),
+                      (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
+        self.m = len(self.r_lst)
+        self.t_vec = (0, 0, 5)
+
+    @staticmethod
+    def normalize_im(im_points, size):
+        im_points += np.array([0.25, 0.25])
+        im_points *= np.array([float(size - 1) / 0.5])
+        return np.int32(im_points)
+
+    def pc_to_im(self, pc, rvec, tvec, size):
+        image_points, _ = cv.projectPoints(pc, rvec=rvec, tvec=tvec, cameraMatrix=np.eye(3), distCoeffs=np.zeros((4,)))
+        image_points = self.normalize_im(image_points[:, 0, :], size)
+        im = np.zeros((size, size))
+        im[image_points[:, 0], image_points[:, 1]] = 1
+        return im
+
+    def __getitem__(self, index):
+        # Get file name
+        file_ind = index // 2048
+        example_ind = index % 2048
+        item, label = self.examples[file_ind]
+        item, label = item[example_ind, :, :], label[example_ind, :]
+        assert item.shape == (self.num_points, 3), f'item.shape={item.shape}'
+        assert label.shape == (1,), f'label.shape={label.shape}'
+        im_list = [self.pc_to_im(item, rvec=rv, tvec=self.t_vec, size=self.size) for rv in self.r_lst]
+        # Create (size, size, M) numpy array
+        im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
+        assert im_item.shape == (1, self.size, self.size, self.m), f'im_item.shape={im_item.shape}'
+        im_tensor = torch.from_numpy(im_item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return im_tensor, label_tensor
+
+
+class PicNet40Test(ModelNet40Test):
+    def __init__(self):
+        super().__init__()
+        self.size = 28
+        self.r_lst = [(0, 0, 0), (-np.pi, 0, 0), (0, 0.5*np.pi, 0),
+                      (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
+        self.m = len(self.r_lst)
+        self.t_vec = (0, 0, 5)
+
+    @staticmethod
+    def normalize_im(im_points, size):
+        im_points += np.array([0.25, 0.25])
+        im_points *= np.array([float(size - 1) / 0.5])
+        return np.int32(im_points)
+
+    def pc_to_im(self, pc, rvec, tvec, size):
+        image_points, _ = cv.projectPoints(pc, rvec=rvec, tvec=tvec, cameraMatrix=np.eye(3), distCoeffs=np.zeros((4,)))
+        image_points = self.normalize_im(image_points[:, 0, :], size)
+        im = np.zeros((size, size))
+        im[image_points[:, 0], image_points[:, 1]] = 1
+        return im
+
+    def __getitem__(self, index):
+        # Get file name
+        file_ind = index // 2048
+        example_ind = index % 2048
+        item, label = self.examples[file_ind]
+        item, label = item[example_ind, :, :], label[example_ind, :]
+        assert item.shape == (self.num_points, 3), f'item.shape={item.shape}'
+        assert label.shape == (1,), f'label.shape={label.shape}'
+        im_list = [self.pc_to_im(item, rvec=rv, tvec=self.t_vec, size=self.size) for rv in self.r_lst]
+        # Create (size, size, M) numpy array
+        im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
+        assert im_item.shape == (1, self.size, self.size, self.m), f'im_item.shape={im_item.shape}'
+        im_tensor = torch.from_numpy(im_item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return im_tensor, label_tensor
 
 
 class BatchResult(NamedTuple):

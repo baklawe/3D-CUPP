@@ -12,7 +12,7 @@ import training
 import model
 
 
-def run_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=7, lr=1e-3, l2_reg=1e-4):
+def point_net_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=7, lr=1e-3, l2_reg=1e-4):
 
     if not seed:
         seed = random.randint(0, 2**31)
@@ -27,6 +27,35 @@ def run_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=7, lr=1e
     dl_test = DataLoader(ds_test, bs_test, shuffle=True)
 
     our_model = model.PointNet()
+    loss_fn = F.nll_loss
+    optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
+    cfg.update({'optimizer': type(optimizer).__name__})
+    cfg.update({'model': str(our_model)})
+
+    for key, val in cfg.items():
+        print(f'{key}: {val}')
+
+    trainer = training.PointNetTrainer(our_model, loss_fn, optimizer)
+
+    fit_res = trainer.fit(dl_train, dl_test, epochs, early_stopping=early_stopping, checkpoints=exp_name)
+    save_experiment(exp_name, cfg, fit_res)
+
+
+def pic_net_experiment(exp_name, seed=None, bs_train=32, bs_test=32, epochs=50, lr=1e-3, l2_reg=1e-4):
+
+    if not seed:
+        seed = random.randint(0, 2**31)
+    torch.manual_seed(seed)
+    early_stopping = max((10, epochs//20))
+    cfg = locals()
+
+    ds_train = training.PicNet40Train()
+    ds_test = training.PicNet40Test()
+
+    dl_train = DataLoader(ds_train, bs_train, shuffle=True)
+    dl_test = DataLoader(ds_test, bs_test, shuffle=True)
+
+    our_model = model.PicNet()
     loss_fn = F.nll_loss
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     cfg.update({'optimizer': type(optimizer).__name__})
@@ -63,6 +92,6 @@ def load_experiment(filename):
 
 
 if __name__ == '__main__':
-    expr_name = 'first_try'
-    run_experiment(f'{expr_name}')
+    expr_name = 'pic_net_try'
+    pic_net_experiment(f'{expr_name}')
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
