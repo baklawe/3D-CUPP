@@ -23,7 +23,7 @@ class ModelNet40Ds(Dataset):
         self.examples_per_file = 2048
         self.examples = []
         for h5_file in h5_files:
-            current_data, current_label = load_h5(h5_file)
+            current_data, current_label = self.load_h5(h5_file)
             current_data = current_data[:, 0:self.num_points, :]
             self.examples.append((current_data, current_label))
             self.tot_examples += current_data.shape[0]

@@ -68,8 +68,8 @@ def load_experiment(filename):
 
 
 if __name__ == '__main__':
-    expr_name = 'pic-net-try'
-    # net_type = 'PointNet'
-    net_type = 'PicNet'
+    expr_name = 'point-net-try'
+    net_type = 'PointNet'
+    # net_type = 'PicNet'
     run_experiment(f'{expr_name}', net_type)
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
