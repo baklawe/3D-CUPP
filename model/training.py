@@ -15,141 +15,72 @@ import numpy as np
 import cv2 as cv
 
 
-def load_h5(h5_filename):
-    f = h5py.File(h5_filename)
-    data = f['data'][:]
-    label = f['label'][:]
-    return data, label
-
-
-class ModelNet40Train(Dataset):
-    def __init__(self):
+class ModelNet40Ds(Dataset):
+    def __init__(self, h5_files: List[str]):
         super().__init__()
         self.num_points = 1024
+        self.tot_examples = 0
+        self.examples_per_file = 2048
         self.examples = []
-        for ind in range(5):
-            current_data, current_label = load_h5(f'../data/modelnet40_ply_hdf5_2048/ply_data_train{ind}.h5')
+        for h5_file in h5_files:
+            current_data, current_label = load_h5(h5_file)
             current_data = current_data[:, 0:self.num_points, :]
             self.examples.append((current_data, current_label))
+            self.tot_examples += current_data.shape[0]
 
     def __getitem__(self, index):
-        # Get file name
-        file_ind = index // 2048
-        example_ind = index % 2048
-        item, label = self.examples[file_ind]
-        item, label = item[example_ind, :, :].transpose(), label[example_ind, :]
-        assert item.shape == (3, self.num_points), f'item.shape={item.shape}'
-        assert label.shape == (1,), f'label.shape={label.shape}'
+        item, label = self.get_np_pc(index)
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
 
     def __len__(self):
-        """
-        modelnet40 train composed of 5 h5 files, each contains 2048 examples except for the last one which has 1648
-        """
-        return 4 * 2048 + 1648
+        return self.tot_examples
 
-
-class ModelNet40Test(Dataset):
-    def __init__(self):
-        super().__init__()
-        self.num_points = 1024
-        self.examples = []
-        for ind in range(2):
-            current_data, current_label = load_h5(f'../data/modelnet40_ply_hdf5_2048/ply_data_test{ind}.h5')
-            current_data = current_data[:, 0:self.num_points, :]
-            self.examples.append((current_data, current_label))
-
-    def __getitem__(self, index):
+    def get_np_pc(self, index):
         # Get file name
-        file_ind = index // 2048
-        example_ind = index % 2048
+        file_ind = index // self.examples_per_file
+        example_ind = index % self.examples_per_file
         item, label = self.examples[file_ind]
         item, label = item[example_ind, :, :].transpose(), label[example_ind, :]
         assert item.shape == (3, self.num_points), f'item.shape={item.shape}'
         assert label.shape == (1,), f'label.shape={label.shape}'
-        item_tensor = torch.from_numpy(item).float()
-        label_tensor = torch.from_numpy(label).long()
-        return item_tensor, label_tensor
+        return item, label
 
-    def __len__(self):
-        """
-        modelnet40 train composed of 5 h5 files, each contains 2048 examples except for the last one which has 1648
-        """
-        return 2048 + 420
+    @staticmethod
+    def load_h5(h5_filename):
+        f = h5py.File(h5_filename)
+        data = f['data'][:]
+        label = f['label'][:]
+        return data, label
 
 
-class PicNet40Train(ModelNet40Train):
-    def __init__(self):
-        super().__init__()
+class PicNet40Ds(ModelNet40Ds):
+    def __init__(self, h5_files: List[str]):
+        super().__init__(h5_files)
         self.size = 28
         self.r_lst = [(0, 0, 0), (-np.pi, 0, 0), (0, 0.5*np.pi, 0),
                       (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
         self.m = len(self.r_lst)
         self.t_vec = (0, 0, 5)
 
-    @staticmethod
-    def normalize_im(im_points, size):
+    def normalize_im(self, im_points):
         im_points += np.array([0.25, 0.25])
-        im_points *= np.array([float(size - 1) / 0.5])
+        im_points *= np.array([float(self.size - 1) / 0.5])
         return np.int32(im_points)
 
-    def pc_to_im(self, pc, rvec, tvec, size):
-        image_points, _ = cv.projectPoints(pc, rvec=rvec, tvec=tvec, cameraMatrix=np.eye(3), distCoeffs=np.zeros((4,)))
-        image_points = self.normalize_im(image_points[:, 0, :], size)
-        im = np.zeros((size, size))
+    def pc_to_im(self, pc, rvec):
+        image_points, _ = cv.projectPoints(pc, rvec=rvec,
+                                           tvec=self.t_vec,
+                                           cameraMatrix=np.eye(3), distCoeffs=np.zeros((4,)))
+        image_points = self.normalize_im(image_points[:, 0, :])
+        im = np.zeros((self.size, self.size))
         im[image_points[:, 0], image_points[:, 1]] = 1
         return im
 
     def __getitem__(self, index):
-        # Get file name
-        file_ind = index // 2048
-        example_ind = index % 2048
-        item, label = self.examples[file_ind]
-        item, label = item[example_ind, :, :], label[example_ind, :]
-        assert item.shape == (self.num_points, 3), f'item.shape={item.shape}'
-        assert label.shape == (1,), f'label.shape={label.shape}'
-        im_list = [self.pc_to_im(item, rvec=rv, tvec=self.t_vec, size=self.size) for rv in self.r_lst]
-        # Create (size, size, M) numpy array
-        im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
-        assert im_item.shape == (1, self.size, self.size, self.m), f'im_item.shape={im_item.shape}'
-        im_tensor = torch.from_numpy(im_item).float()
-        label_tensor = torch.from_numpy(label).long()
-        return im_tensor, label_tensor
-
-
-class PicNet40Test(ModelNet40Test):
-    def __init__(self):
-        super().__init__()
-        self.size = 28
-        self.r_lst = [(0, 0, 0), (-np.pi, 0, 0), (0, 0.5*np.pi, 0),
-                      (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
-        self.m = len(self.r_lst)
-        self.t_vec = (0, 0, 5)
-
-    @staticmethod
-    def normalize_im(im_points, size):
-        im_points += np.array([0.25, 0.25])
-        im_points *= np.array([float(size - 1) / 0.5])
-        return np.int32(im_points)
-
-    def pc_to_im(self, pc, rvec, tvec, size):
-        image_points, _ = cv.projectPoints(pc, rvec=rvec, tvec=tvec, cameraMatrix=np.eye(3), distCoeffs=np.zeros((4,)))
-        image_points = self.normalize_im(image_points[:, 0, :], size)
-        im = np.zeros((size, size))
-        im[image_points[:, 0], image_points[:, 1]] = 1
-        return im
-
-    def __getitem__(self, index):
-        # Get file name
-        file_ind = index // 2048
-        example_ind = index % 2048
-        item, label = self.examples[file_ind]
-        item, label = item[example_ind, :, :], label[example_ind, :]
-        assert item.shape == (self.num_points, 3), f'item.shape={item.shape}'
-        assert label.shape == (1,), f'label.shape={label.shape}'
-        im_list = [self.pc_to_im(item, rvec=rv, tvec=self.t_vec, size=self.size) for rv in self.r_lst]
+        pc, label = self.get_np_pc(index)
+        im_list = [self.pc_to_im(pc.transpose(), rvec=rv) for rv in self.r_lst]
         # Create (size, size, M) numpy array
         im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
         assert im_item.shape == (1, self.size, self.size, self.m), f'im_item.shape={im_item.shape}'
@@ -299,7 +230,6 @@ class PointNetTrainer:
     @staticmethod
     def plot_error(fit_res: FitResult):
         epochs = [*range(1, len(fit_res.train_acc)+1)]
-        # batches = [*range(1, len(fit_res.train_loss)+1)]
         fig = plt.figure(1)
 
         plt.subplot(211)
@@ -307,7 +237,6 @@ class PointNetTrainer:
         plt.plot(epochs, fit_res.test_loss, color='r')
         plt.yscale('log')
         plt.ylabel('Loss')
-        # plt.xlabel('#batches')
         plt.legend(['Train', 'Test'], loc='upper left')
 
         plt.subplot(212)
