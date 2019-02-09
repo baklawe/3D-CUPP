@@ -27,9 +27,12 @@ class ModelNet40Ds(Dataset):
             current_data = current_data[:, 0:self.num_points, :]
             self.examples.append((current_data, current_label))
             self.tot_examples += current_data.shape[0]
+        self.train = 'train' in h5_files[0]
 
     def __getitem__(self, index):
         item, label = self.get_np_pc(index)
+        if self.train:
+            item = self.jitter_pc(self.rotate_pc(item))
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
@@ -53,6 +56,26 @@ class ModelNet40Ds(Dataset):
         data = f['data'][:]
         label = f['label'][:]
         return data, label
+
+    @staticmethod
+    def rotate_pc(pc):
+        """
+        :param pc: (3, N)
+        :return: pc rotated around y axis.
+        """
+        rotation_angle = np.random.uniform() * 2 * np.pi
+        cosval = np.cos(rotation_angle)
+        sinval = np.sin(rotation_angle)
+        rotation_y = np.array([[cosval, 0, sinval],
+                               [0, 1, 0],
+                               [-sinval, 0, cosval]])
+        return rotation_y @ pc
+
+    @staticmethod
+    def jitter_pc(pc, sigma=0.01, clip=0.05):
+        assert (clip > 0)
+        noise = np.clip(sigma * np.random.randn(*pc.shape), -1 * clip, clip)
+        return pc + noise
 
 
 class PicNet40Ds(ModelNet40Ds):
@@ -89,6 +112,24 @@ class PicNet40Ds(ModelNet40Ds):
         return im_tensor, label_tensor
 
 
+class CuppNet40Ds(PicNet40Ds):
+    def __init__(self, h5_files: List[str]):
+        super().__init__(h5_files)
+
+    def __getitem__(self, index):
+        pc, label = self.get_np_pc(index)
+        im_list = [self.pc_to_im(pc.transpose(), rvec=rv) for rv in self.r_lst]
+        # Create (size, size, M) numpy array
+        im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
+        assert im_item.shape == (1, self.size, self.size, self.m), f'im_item.shape={im_item.shape}'
+        im_tensor = torch.from_numpy(im_item).float()
+        if self.train:
+            pc = self.jitter_pc(self.rotate_pc(pc))
+        pc_tensor = torch.from_numpy(pc).float()
+        label_tensor = torch.from_numpy(label).long()
+        return pc_tensor, im_tensor, label_tensor
+
+
 class BatchResult(NamedTuple):
     loss: float
     num_correct: int
@@ -118,17 +159,19 @@ class FitResult(NamedTuple):
 
     def check_early_stopping(self, early_stopping: int):
         test_lst = self.test_acc[-(early_stopping + 1):]
-        return all(earlier <= later for earlier, later in zip(test_lst, test_lst[1:]))
+        return all(earlier >= later for earlier, later in zip(test_lst, test_lst[1:]))
 
 
-class PointNetTrainer:
-    def __init__(self, model, loss_fn, optimizer):
+class NetTrainer:
+    def __init__(self, model, loss_fn, optimizer, scheduler):
         self.model = model
         self.loss_fn = loss_fn
         self.optimizer = optimizer
+        self.scheduler = scheduler
         assert torch.cuda.is_available()
         self.device = torch.device('cuda')
         model.to(self.device)
+        self.exp_name = None
 
     def fit(self, dl_train: DataLoader, dl_test: DataLoader, num_epochs,
             early_stopping, checkpoints: str = None) -> FitResult:
@@ -137,6 +180,7 @@ class PointNetTrainer:
 
         start_epoch = 1
         if checkpoints:
+            self.exp_name = checkpoints
             checkpoint_filename = f'results/{checkpoints}.pt'
             if os.path.isfile(checkpoint_filename):
                 print(f'*** Loading checkpoint file {checkpoint_filename}')
@@ -144,9 +188,12 @@ class PointNetTrainer:
                 self.model.load_state_dict(saved_state['model_state'])
                 fit_res = saved_state.get('fit_res', fit_res)
                 start_epoch += len(fit_res.test_loss)
+                for i in range(start_epoch):
+                    self.scheduler.step()
 
         for epoch in range(start_epoch, num_epochs+1):
-            print(f'--- EPOCH {epoch}/{num_epochs} ---')
+            self.scheduler.step()
+            print(f'--- EPOCH {epoch}/{num_epochs}, LR: {self.scheduler.get_lr()[0]:.3e}')
 
             fit_res.add_epoch_train(self.train_epoch(dl_train))
             fit_res.add_epoch_test(self.test_epoch(dl_test))
@@ -227,27 +274,53 @@ class PointNetTrainer:
 
         return EpochResult(losses=losses, accuracy=accuracy)
 
-    @staticmethod
-    def plot_error(fit_res: FitResult):
+    def plot_error(self, fit_res: FitResult):
         epochs = [*range(1, len(fit_res.train_acc)+1)]
-        fig = plt.figure(1)
+        plt.rcParams.update({'font.size': 22})
+        fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(16, 10), sharex='col')
+        best_loss = min(fit_res.test_loss)
+        best_acc = max(fit_res.test_acc)
 
-        plt.subplot(211)
-        plt.plot(epochs, fit_res.train_loss, color='b')
-        plt.plot(epochs, fit_res.test_loss, color='r')
-        plt.yscale('log')
-        plt.ylabel('Loss')
-        plt.legend(['Train', 'Test'], loc='upper left')
+        ax = axes[0]
+        ax.set_title(f'{self.exp_name}, Best Loss: {best_loss:.3e}, Best Acc: {best_acc:.1f}')
+        ax.plot(epochs, fit_res.train_loss, color='b')
+        ax.plot(epochs, fit_res.test_loss, color='r')
+        ax.set_ylabel('Loss')
+        ax.set_yscale('log')
+        ax.legend(['Train', 'Test'], loc='upper left')
 
-        plt.subplot(212)
-        plt.plot(epochs, fit_res.train_acc, color='b')
-        plt.plot(epochs, fit_res.test_acc, color='r')
-        plt.yscale('log')
-        plt.ylabel('Accuracy')
-        plt.xlabel('#epochs')
-        plt.legend(['Train', 'Test'], loc='upper left')
-
-        plt.subplots_adjust(left=0.2, top=0.95, bottom=0.1, hspace=0.3, wspace=0.3)
+        ax = axes[1]
+        ax.plot(epochs, fit_res.train_acc, color='b')
+        ax.plot(epochs, fit_res.test_acc, color='r')
+        ax.set_ylabel('Accuracy')
+        ax.set_xlabel('#epochs')
+        ax.legend(['Train', 'Test'], loc='upper left')
         plt.savefig('results/learning_curve.png')
+        plt.savefig(f'results/{self.exp_name}.png')
         plt.close(fig)
         return
+
+
+class CuppTrainer(NetTrainer):
+    def __init__(self, model, loss_fn, optimizer, scheduler):
+        super().__init__(model, loss_fn, optimizer, scheduler)
+
+    def train_batch(self, batch) -> BatchResult:
+        pc, proj, y = batch
+        pc, proj, y = pc.to(self.device), proj.to(self.device), y.view(-1,).to(self.device)
+        self.optimizer.zero_grad()
+        y_pred = self.model(pc, proj)
+        loss = self.loss_fn(y_pred, y)
+        loss.backward()
+        self.optimizer.step()
+        num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+        return BatchResult(loss.item(), num_correct.item())
+
+    def test_batch(self, batch) -> BatchResult:
+        with torch.no_grad():
+            pc, proj, y = batch
+            pc, proj, y = pc.to(self.device), proj.to(self.device), y.view(-1, ).to(self.device)
+            y_pred = self.model(pc, proj)
+            loss = self.loss_fn(y_pred, y)
+            num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+            return BatchResult(loss.item(), num_correct.item())

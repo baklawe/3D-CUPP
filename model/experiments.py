@@ -12,7 +12,7 @@ def get_files_list(list_filename):
     return ['../' + line.rstrip() for line in open(list_filename)]
 
 
-def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=20, lr=1e-3, l2_reg=1e-4):
+def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=1e-3):
 
     if not seed:
         seed = random.randint(0, 2**31)
@@ -24,26 +24,34 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
     test_files = get_files_list('../data/modelnet40_ply_hdf5_2048/test_files.txt')
 
     if net is 'PointNet':
-        our_model = model.PointNet()
+        our_model = model.PointNetBase()
         ds_train = training.ModelNet40Ds(train_files)
         ds_test = training.ModelNet40Ds(test_files)
-    else:
+    elif net is 'PicNet':
         our_model = model.PicNet()
         ds_train = training.PicNet40Ds(train_files)
         ds_test = training.PicNet40Ds(test_files)
+    else:
+        our_model = model.CuppNet()
+        ds_train = training.CuppNet40Ds(train_files)
+        ds_test = training.CuppNet40Ds(test_files)
 
     dl_train = DataLoader(ds_train, bs_train, shuffle=True)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True)
 
     loss_fn = F.nll_loss
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
     cfg.update({'optimizer': type(optimizer).__name__})
     cfg.update({'model': str(our_model)})
 
     for key, val in cfg.items():
         print(f'{key}: {val}')
 
-    trainer = training.PointNetTrainer(our_model, loss_fn, optimizer)
+    if net in ['PointNet', 'PicNet']:
+        trainer = training.NetTrainer(our_model, loss_fn, optimizer, scheduler)
+    else:
+        trainer = training.CuppTrainer(our_model, loss_fn, optimizer, scheduler)
 
     fit_res = trainer.fit(dl_train, dl_test, epochs, early_stopping=early_stopping, checkpoints=exp_name)
     save_experiment(exp_name, cfg, fit_res)
@@ -68,8 +76,9 @@ def load_experiment(filename):
 
 
 if __name__ == '__main__':
-    expr_name = 'point-net-try'
-    net_type = 'PointNet'
+    expr_name = 'cuppnet-jitter-pc-only'
+    # net_type = 'PointNet'
+    net_type = 'CuppNet'
     # net_type = 'PicNet'
     run_experiment(f'{expr_name}', net_type)
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
