@@ -24,7 +24,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
     test_files = get_files_list('../data/modelnet40_ply_hdf5_2048/test_files.txt')
 
     if net is 'PointNet':
-        our_model = model.PointNetBase()
+        our_model = model.PointNet()
         ds_train = training.ModelNet40Ds(train_files)
         ds_test = training.ModelNet40Ds(test_files)
     elif net is 'PicNet':
@@ -41,15 +41,17 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
 
     loss_fn = F.nll_loss
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
     cfg.update({'optimizer': type(optimizer).__name__})
     cfg.update({'model': str(our_model)})
 
     for key, val in cfg.items():
         print(f'{key}: {val}')
 
-    if net in ['PointNet', 'PicNet']:
+    if net is 'PicNet':
         trainer = training.NetTrainer(our_model, loss_fn, optimizer, scheduler)
+    elif net is 'PointNet':
+        trainer = training.PointNetTrainer(our_model, loss_fn, optimizer, scheduler)
     else:
         trainer = training.CuppTrainer(our_model, loss_fn, optimizer, scheduler)
 
@@ -76,9 +78,9 @@ def load_experiment(filename):
 
 
 if __name__ == '__main__':
-    expr_name = 'cuppnet-jitter-pc-only'
-    # net_type = 'PointNet'
-    net_type = 'CuppNet'
+    expr_name = 'PointNet-full2'
+    net_type = 'PointNet'
+    # net_type = 'CuppNet'
     # net_type = 'PicNet'
     run_experiment(f'{expr_name}', net_type)
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')

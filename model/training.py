@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2 as cv
+import torch.nn.functional as F
 
 
 class ModelNet40Ds(Dataset):
@@ -81,9 +82,9 @@ class ModelNet40Ds(Dataset):
 class PicNet40Ds(ModelNet40Ds):
     def __init__(self, h5_files: List[str]):
         super().__init__(h5_files)
-        self.size = 28
-        self.r_lst = [(0, 0, 0), (-np.pi, 0, 0), (0, 0.5*np.pi, 0),
-                      (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
+        self.size = 32
+        self.r_lst = [(0, 0, 0), (-np.pi, 0, 0),
+                      (0, 0.5*np.pi, 0), (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
         self.m = len(self.r_lst)
         self.t_vec = (0, 0, 5)
 
@@ -103,6 +104,8 @@ class PicNet40Ds(ModelNet40Ds):
 
     def __getitem__(self, index):
         pc, label = self.get_np_pc(index)
+        # if self.train:
+        #     pc = self.jitter_pc(self.rotate_pc(pc))
         im_list = [self.pc_to_im(pc.transpose(), rvec=rv) for rv in self.r_lst]
         # Create (size, size, M) numpy array
         im_item = np.stack(im_list, axis=-1)[np.newaxis, ...]
@@ -173,6 +176,23 @@ class NetTrainer:
         model.to(self.device)
         self.exp_name = None
 
+    def update_bn_momentum(self, epoch):
+        # Update BatchNorm momentum, start with 0.5 and every 20 epochs multiply by 0.5, clip to 0.01
+        momentum = max([0.01, 0.5 * 0.5 ** (epoch // 20)])
+        for seq in self.model.children():
+            for layer in seq.children():
+                if type(layer) == torch.nn.BatchNorm1d:
+                    layer.momentum = momentum
+        return momentum
+
+    def optimizer_lr_step(self):
+        min_lr = 1e-5
+        lr = self.scheduler.get_lr()[0]
+        if lr > min_lr:
+            self.scheduler.step()
+            lr = self.scheduler.get_lr()[0]
+        return lr
+
     def fit(self, dl_train: DataLoader, dl_test: DataLoader, num_epochs,
             early_stopping, checkpoints: str = None) -> FitResult:
 
@@ -189,11 +209,13 @@ class NetTrainer:
                 fit_res = saved_state.get('fit_res', fit_res)
                 start_epoch += len(fit_res.test_loss)
                 for i in range(start_epoch):
-                    self.scheduler.step()
+                    self.optimizer_lr_step()
 
         for epoch in range(start_epoch, num_epochs+1):
-            self.scheduler.step()
-            print(f'--- EPOCH {epoch}/{num_epochs}, LR: {self.scheduler.get_lr()[0]:.3e}')
+            lr = self.optimizer_lr_step()
+            momentum = self.update_bn_momentum(epoch=epoch-1)
+
+            print(f'--- EPOCH {epoch}/{num_epochs}, LR: {lr:.3e}, BN: {momentum:.3f}')
 
             fit_res.add_epoch_train(self.train_epoch(dl_train))
             fit_res.add_epoch_test(self.test_epoch(dl_test))
@@ -282,12 +304,13 @@ class NetTrainer:
         best_acc = max(fit_res.test_acc)
 
         ax = axes[0]
-        ax.set_title(f'{self.exp_name}, Best Loss: {best_loss:.3e}, Best Acc: {best_acc:.1f}')
+        ax.set_title(f'{self.exp_name.capitalize()}, Best Loss: {best_loss:.3e}, Best Acc: {best_acc:.1f}')
         ax.plot(epochs, fit_res.train_loss, color='b')
         ax.plot(epochs, fit_res.test_loss, color='r')
         ax.set_ylabel('Loss')
         ax.set_yscale('log')
         ax.legend(['Train', 'Test'], loc='upper left')
+        ax.grid(axis='y')
 
         ax = axes[1]
         ax.plot(epochs, fit_res.train_acc, color='b')
@@ -295,10 +318,39 @@ class NetTrainer:
         ax.set_ylabel('Accuracy')
         ax.set_xlabel('#epochs')
         ax.legend(['Train', 'Test'], loc='upper left')
+        ax.grid(axis='y')
+        ax.set_yticks(range(50, 100, 5))
         plt.savefig('results/learning_curve.png')
         plt.savefig(f'results/{self.exp_name}.png')
         plt.close(fig)
         return
+
+
+class PointNetTrainer(NetTrainer):
+    def __init__(self, model, loss_fn, optimizer, scheduler):
+        super().__init__(model, loss_fn, optimizer, scheduler)
+
+    def train_batch(self, batch) -> BatchResult:
+        x, y = batch
+        x, y = x.to(self.device), y.view(-1,).to(self.device)
+        self.optimizer.zero_grad()
+        y_pred, trans64 = self.model(x)
+        eye = torch.eye(64, device=x.device).view(1, 64, 64)
+        loss = self.loss_fn(y_pred, y) + 0.001 * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
+        loss.backward()
+        self.optimizer.step()
+        num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+        return BatchResult(loss.item(), num_correct.item())
+
+    def test_batch(self, batch) -> BatchResult:
+        with torch.no_grad():
+            x, y = batch
+            x, y = x.to(self.device), y.view(-1, ).to(self.device)
+            y_pred, trans64 = self.model(x)
+            eye = torch.eye(64, device=x.device).view(1, 64, 64)
+            loss = self.loss_fn(y_pred, y) + 0.001 * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
+            num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+            return BatchResult(loss.item(), num_correct.item())
 
 
 class CuppTrainer(NetTrainer):
