@@ -337,19 +337,21 @@ class CuppNetMax(nn.Module):
                      nn.BatchNorm1d(512)]
         self.pc_seq = nn.Sequential(*pc_layers)  # (B, 512)
 
-        affine = (512, 256, 40)
+        affine = (512, 256)
         affine_layers = []
         affine_layers.extend([nn.MaxPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
                               View1D()])  # (B, 512, 1) --> (B, 512)
-        for c_in, c_out in zip(affine[:-1], affine[1:-1]):
+        for c_in, c_out in zip(affine, affine[1:]):
             affine_layers.extend([nn.Linear(c_in, c_out),
                                   nn.ReLU(),
-                                  nn.BatchNorm1d(c_out)])
-        affine_layers.extend([nn.Linear(affine[-2], affine[-1]),
+                                  nn.BatchNorm1d(c_out),
+                                  nn.Dropout()])
+        affine_layers.extend([nn.Linear(256, 40),
                               nn.LogSoftmax(dim=-1)])
         self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, pc, proj):
-        pc_feat = self.pc_seq(self.pc_feature_net(pc))
+        pc, trans64 = self.pc_feature_net(pc)
+        pc_feat = self.pc_seq(pc)
         proj_feat = self.proj_seq(self.proj_feature_net(proj))
-        return self.affine_seq(torch.stack([pc_feat, proj_feat], dim=-1))
+        return self.affine_seq(torch.stack([pc_feat, proj_feat], dim=-1)), trans64

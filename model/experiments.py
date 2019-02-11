@@ -32,7 +32,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
         ds_train = training.PicNet40Ds(train_files)
         ds_test = training.PicNet40Ds(test_files)
     else:
-        our_model = model.CuppNet()
+        our_model = model.CuppNetMax()
         ds_train = training.CuppNet40Ds(train_files)
         ds_test = training.CuppNet40Ds(test_files)
 
@@ -77,10 +77,50 @@ def load_experiment(filename):
     return config, fit_res
 
 
+def send_mail(subject: str, files: list, cfg: dict):
+    import smtplib
+    from os.path import basename
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    recipients = ['moli0389@gmail.com', 'baklawe@yahoo.com']
+    from_address = 'cupp3d@gmail.com'
+
+    msg = MIMEMultipart()
+    msg['From'] = from_address
+    msg['To'] = ', '.join(recipients)
+    msg['Subject'] = subject
+
+    text = "\n".join("{}: {}".format(*i) for i in cfg.items())
+    msg.attach(MIMEText(text))
+
+    for f in files or []:
+        with open(f, "rb") as fil:
+            part = MIMEApplication(
+                fil.read(),
+                Name=basename(f)
+            )
+        # After the file is closed
+        part['Content-Disposition'] = 'attachment; filename="%s"' % basename(f)
+        msg.attach(part)
+
+    gmail_pwd = 'stateoftheart'
+    smtp = smtplib.SMTP("smtp.gmail.com", 587)
+    smtp.ehlo()
+    smtp.starttls()
+    smtp.login(from_address, gmail_pwd)
+    smtp.sendmail(from_address, recipients, msg.as_string())
+    smtp.close()
+    print('Mail successfully sent')
+    return
+
+
 if __name__ == '__main__':
-    expr_name = 'PointNet-full-wd0'
-    net_type = 'PointNet'
-    # net_type = 'CuppNet'
+    expr_name = 'CuppNet-max-features-dropout'
+    # net_type = 'PointNet'
+    net_type = 'CuppNet'
     # net_type = 'PicNet'
     run_experiment(f'{expr_name}', net_type)
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
+    send_mail(subject=f'{expr_name} results', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
