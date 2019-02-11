@@ -20,13 +20,15 @@ we also have boxes:
   - [ ] Try FPS for projection angles (FPP).
   - [ ] Try sum views in PicNet.  Conclusion: Dos'nt shoe improvement.
   
-- Third task 
-  - [ ] Implement a full version of PointNet and get to ~89 accuracy
+- Third task
+  - [X] Implement a full version of PointNet.
+  - [ ] Get to PointNet ~89 accuracy.
+  
 - Forth task 
-  - [ ] combining things
-
-- Ideas worth spreading
-  - [ ] Take max from the features of pc and proj.
+  - [X] Combining things.
+  - [ ] Take max (and sum) from the features of pc and proj.
+  - [ ] Take max (and sum) from the classes pred of pc and proj.
+  - [ ] Combine features in different stages.
   - [ ] Train the networks separately first (keep features weights) and then join them.
 
   

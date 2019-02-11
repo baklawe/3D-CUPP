@@ -2,6 +2,18 @@ import torch.nn as nn
 import torch
 
 
+def weight_zero(layer):
+    nn.init.zeros_(layer.weight)
+
+
+def weight_xavier(layer):
+    nn.init.xavier_uniform_(layer.weight)
+
+
+def bias_zero(layer):
+    nn.init.zeros_(layer.bias)
+
+
 class View1D(nn.Module):
     def __init__(self):
         super().__init__()
@@ -32,7 +44,7 @@ class AddEye3(nn.Module):
 
     def forward(self, x):
         """
-        :param x: (B, 9)
+        :param x: (B, 3 * 3)
         :return: (B, 3, 3)
         """
         eye = torch.eye(3, device=x.device).view(1, 3, 3)
@@ -45,7 +57,7 @@ class AddEye64(nn.Module):
 
     def forward(self, x):
         """
-        :param x: (B, 64 ** 2)
+        :param x: (B, 64 * 64)
         :return: (B, 64, 64)
         """
         eye = torch.eye(64, device=x.device).view(1, 64, 64)
@@ -65,10 +77,10 @@ class PointNetBase(nn.Module):
         modules = []
         filters = (3, 64, 64, 64, 128, 1024)
         affine = (filters[-1], 512, 256, 40)
-        for in_filters, out_filters in zip(filters, filters[1:]):
-            modules.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
+        for in_filters, c_out in zip(filters, filters[1:]):
+            modules.extend([nn.Conv1d(in_filters, c_out, kernel_size=1),
                             nn.ReLU(),
-                            nn.BatchNorm1d(out_filters)])
+                            nn.BatchNorm1d(c_out)])
         modules.append(nn.MaxPool1d(kernel_size=1024))
         modules.append(View1D())
         for in_affine, out_affine in zip(affine[:-1], affine[1:-1]):
@@ -97,17 +109,18 @@ class Trans3(nn.Module):
         # Transform 3x3
         trans3_layers = []
         filters = (3, 64, 128, 1024)
-        for in_filters, out_filters in zip(filters, filters[1:]):
-            trans3_layers.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
-                                  nn.BatchNorm1d(out_filters),
+        for c_in, c_out in zip(filters, filters[1:]):
+            trans3_layers.extend([nn.Conv1d(c_in, c_out, kernel_size=1).apply(bias_zero).apply(weight_xavier),
+                                  nn.BatchNorm1d(c_out),
                                   nn.ReLU()])
         trans3_layers.extend([nn.MaxPool1d(kernel_size=1024), View1D()])
         affine = (filters[-1], 512, 256)
         for in_affine, out_affine in zip(affine, affine[1:]):
-            trans3_layers.extend([nn.Linear(in_affine, out_affine),
+            trans3_layers.extend([nn.Linear(in_affine, out_affine).apply(bias_zero).apply(weight_xavier),
                                   nn.BatchNorm1d(out_affine),
                                   nn.ReLU()])
-        trans3_layers.extend([nn.Linear(affine[-1], 9), AddEye3()])
+        trans3_layers.extend([nn.Linear(affine[-1], 9).apply(weight_zero).apply(bias_zero),
+                              AddEye3()])
         self.trans3_seq = nn.Sequential(*trans3_layers)
 
     def forward(self, x):
@@ -127,21 +140,62 @@ class Trans64(nn.Module):
         # Transform 64x64
         trans64_layers = []
         filters = (64, 64, 128, 1024)
-        for in_filters, out_filters in zip(filters, filters[1:]):
-            trans64_layers.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
-                                  nn.BatchNorm1d(out_filters),
+        for c_in, c_out in zip(filters, filters[1:]):
+            trans64_layers.extend([nn.Conv1d(c_in, c_out, kernel_size=1).apply(bias_zero).apply(weight_xavier),
+                                  nn.BatchNorm1d(c_out),
                                   nn.ReLU()])
         trans64_layers.extend([nn.MaxPool1d(kernel_size=1024), View1D()])
         affine = (filters[-1], 512, 256)
         for in_affine, out_affine in zip(affine, affine[1:]):
-            trans64_layers.extend([nn.Linear(in_affine, out_affine),
+            trans64_layers.extend([nn.Linear(in_affine, out_affine).apply(bias_zero).apply(weight_xavier),
                                   nn.BatchNorm1d(out_affine),
                                   nn.ReLU()])
-        trans64_layers.extend([nn.Linear(affine[-1], 64 ** 2), AddEye64()])
+        trans64_layers.extend([nn.Linear(affine[-1], 64 ** 2).apply(weight_zero).apply(bias_zero),
+                               AddEye64()])
         self.trans64_seq = nn.Sequential(*trans64_layers)
 
     def forward(self, x):
         return self.trans64_seq(x)
+
+
+class PointNetFeatures(nn.Module):
+    def __init__(self):
+        """
+        Input dim: (B, 3, N) represents batch of N (usually N=1024) (x, y, z).
+        After Conv1d filters: (B, 1024, N).
+        After pooling: (B, 1024, 1).
+        After View: (B, 1024).
+        """
+        super().__init__()
+        self.trans3 = Trans3()
+        self.trans64 = Trans64()
+
+        # MLP 64 sequence
+        mlp64_layers = []
+        filters = (3, 64, 64)
+        for c_in, c_out in zip(filters, filters[1:]):
+            mlp64_layers.extend([nn.Conv1d(c_in, c_out, kernel_size=1).apply(bias_zero).apply(weight_xavier),
+                                 nn.BatchNorm1d(c_out),
+                                 nn.ReLU()])
+        self.mlp64_seq = nn.Sequential(*mlp64_layers)
+
+        feature_layers = []
+        filters = (64, 128, 1024)
+        for c_in, c_out in zip(filters, filters[1:]):
+            feature_layers.extend([nn.Conv1d(c_in, c_out, kernel_size=1).apply(bias_zero).apply(weight_xavier),
+                                   nn.BatchNorm1d(c_out),
+                                   nn.ReLU()])
+        feature_layers.extend([nn.MaxPool1d(kernel_size=1024),
+                               View1D()])
+        self.get_features = nn.Sequential(*feature_layers)
+
+    def forward(self, x):
+        trans3 = self.trans3(x)  # (B, 3, N) --> (B, 3, 3)
+        x = trans3.bmm(x)  # (B, 3, 3) @ (B, 3, N)
+        x = self.mlp64_seq(x)
+        trans64 = self.trans64(x)
+        x = trans64.bmm(x)
+        return self.get_features(x), trans64
 
 
 class PointNet(nn.Module):
@@ -154,100 +208,67 @@ class PointNet(nn.Module):
         Linear layers: (B, 1024) -> (B, num_classes). num_classes = 40 for ModelNet40 data-set.
         """
         super().__init__()
-        self.trans3 = Trans3()
-        self.trans64 = Trans64()
+        self.feature_net = PointNetFeatures()
 
-        # TODO: 0 initialization
-
-        # MLP 64 sequence
-        mlp64_layers = []
-        filters = (3, 64, 64)
-        for in_filters, out_filters in zip(filters, filters[1:]):
-            mlp64_layers.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
-                                 nn.BatchNorm1d(out_filters),
-                                 nn.ReLU()])
-        self.mlp64_seq = nn.Sequential(*mlp64_layers)
-
-        # Main sequence
-        end_layers = []
-        filters = (64, 128, 1024)
-        for in_filters, out_filters in zip(filters, filters[1:]):
-            end_layers.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
-                               nn.BatchNorm1d(out_filters),
-                               nn.ReLU()])
-        end_layers.extend([nn.MaxPool1d(kernel_size=1024), View1D()])
-        affine = (filters[-1], 512, 256)
-        for in_affine, out_affine in zip(affine, affine[1:]):
-            end_layers.extend([nn.Linear(in_affine, out_affine),
-                               nn.BatchNorm1d(out_affine),
-                               nn.ReLU(),
-                               nn.Dropout(p=0.3)])
-        end_layers.append(nn.Linear(affine[-1], 40))
-        end_layers.append(nn.LogSoftmax(dim=-1))
-        self.end_seq = nn.Sequential(*end_layers)
+        affine_layers = []
+        channels = (1024, 512, 256)
+        for c_in, c_out in zip(channels, channels[1:]):
+            affine_layers.extend([nn.Linear(c_in, c_out).apply(bias_zero).apply(weight_xavier),
+                                  nn.BatchNorm1d(c_out),
+                                  nn.ReLU(),
+                                  nn.Dropout(p=0.3)])
+        affine_layers.extend([nn.Linear(channels[-1], 40).apply(bias_zero).apply(weight_xavier),
+                              nn.LogSoftmax(dim=-1)])
+        self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, x):
-        trans3 = self.trans3(x)  # (B, N, 3) --> (B, 3, 3)
-        x = trans3.bmm(x)
-        x = self.mlp64_seq(x)
-        trans64 = self.trans64(x)
-        x = trans64.bmm(x)
-        return self.end_seq(x), trans64
+        x, trans64 = self.feature_net(x)
+        return self.affine_seq(x), trans64
+
+
+class PicNetFeatures(nn.Module):
+    def __init__(self, m=6, s=32):
+        """
+        Input dim: (B, 1, S, S, M)
+        Output features dim: (B, 20 * (S/4-3) ** 2)
+        """
+        super().__init__()
+        self.m = m
+        self.s = s
+        modules = []  # (B, 1, S, S, M)
+        modules.extend([nn.Conv3d(1, 10, kernel_size=(5, 5, 1)),  # (B, 10, S-4, S-4, M)
+                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 10, S/2-2, S/2-2, M)
+                        nn.ReLU()])
+        modules.extend([nn.Conv3d(10, 20, kernel_size=(5, 5, 1)),  # (B, 20, S/2-6, S/2-6, M)
+                        nn.Dropout3d(),
+                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 20, S/4-3, S/4-3, M)
+                        nn.ReLU()])
+        modules.extend([View2D(),  # (B, 20 * (S/4-3) ** 2, M)
+                        nn.MaxPool1d(kernel_size=self.m),  # (B, 20 * (S/4-3) ** 2, 1)
+                        View1D()])  # (B, 20 * (S/4-3) ** 2)
+        self.feature_seq = nn.Sequential(*modules)
+
+    def forward(self, x):
+        return self.feature_seq(x)
+
+    def feature_len(self):
+        return int(20 * (self.s/4 - 3) ** 2)
 
 
 class PicNet(nn.Module):
-    def __init__(self):
+    def __init__(self, m=6, s=32):
         super().__init__()
-        m = 6
-        modules = []  # (B, 1, 28, 28, M)
-        modules.extend([nn.Conv3d(1, 10, kernel_size=(5, 5, 1)),  # (B, 10, 24, 24, M)
-                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 10, 12, 12, M)
-                        nn.ReLU()])
-        modules.extend([nn.Conv3d(10, 20, kernel_size=(5, 5, 1)),  # (B, 20, 8, 8, M)
-                        nn.Dropout3d(),
-                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 20, 4, 4, M)
-                        nn.ReLU()])
-        modules.append(View2D())  # (B, 500, M)
-        modules.append(nn.MaxPool1d(kernel_size=m))  # (B, 500, 1)
-        modules.append(View1D())  # (B, 500)
-        modules.extend([nn.Linear(500, 256),  # (B, 256)
+        self.feature_net = PicNetFeatures(m=m, s=s)
+        c_in = self.feature_net.feature_len()
+        modules = []
+        modules.extend([nn.Linear(c_in, 256),  # (B, 256)
                         nn.ReLU(),
                         nn.Dropout()])
         modules.extend([nn.Linear(256, 128),  # (B, 256)
                         nn.ReLU(),
                         nn.Dropout()])
-        modules.append(nn.Linear(128, 40))  # (B, 40)
-        modules.append(nn.LogSoftmax(dim=-1))
-        self.seq = nn.Sequential(*modules)
-
-    def forward(self, x):
-        return self.seq(x)
-
-
-class PicNetBN(nn.Module):
-    def __init__(self):
-        super().__init__()
-        m = 6
-        modules = []  # (B, 1, 28, 28, M)
-        modules.extend([nn.Conv3d(1, 10, kernel_size=(5, 5, 1)),  # (B, 10, 24, 24, M)
-                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 10, 12, 12, M)
-                        nn.ReLU(),
-                        nn.BatchNorm3d(10)])
-        modules.extend([nn.Conv3d(10, 20, kernel_size=(5, 5, 1)),  # (B, 20, 8, 8, M)
-                        nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 20, 4, 4, M)
-                        nn.ReLU(),
-                        nn.BatchNorm3d(20)])
-        modules.append(View2D())  # (B, 320, M)
-        modules.append(nn.MaxPool1d(kernel_size=m))  # (B, 320, 1)
-        modules.append(View1D())  # (B, 320)
-        modules.extend([nn.Linear(320, 256),  # (B, 50)
-                        nn.ReLU(),
-                        nn.Dropout()])
-        modules.extend([nn.Linear(256, 128),  # (B, 50)
-                        nn.ReLU(),
-                        nn.Dropout()])
-        modules.append(nn.Linear(128, 40))  # (B, 40)
-        modules.append(nn.LogSoftmax(dim=-1))
+        modules.extend([nn.Linear(128, 40),  # (B, 40)
+                        nn.LogSoftmax(dim=-1)])
         self.seq = nn.Sequential(*modules)
 
     def forward(self, x):
@@ -257,58 +278,78 @@ class PicNetBN(nn.Module):
 class CuppNet(nn.Module):
     def __init__(self):
         """
-        Input dim: (B, 3, N) represents batch of N (usually N=1024) (x, y, z).
-        After Conv1d filters: (B, 1024, N).
-        After pooling: (B, 1024, 1).
-        After View: (B, 1024).
-        Linear layers: (B, 1024) -> (B, num_classes). num_classes = 40 for ModelNet40 data-set.
+        Input dim: (B, 3, N)
+        Output dim: (B, num_classes)
         """
         super().__init__()
+        self.proj_feature_net = PicNetFeatures()  # (B, 500)
+        proj_feature_len = self.proj_feature_net.feature_len()
+        self.pc_feature_net = PointNetFeatures()  # (B, 1024)
+
+        proj_layers = [nn.Linear(proj_feature_len, 256),
+                       nn.ReLU(),
+                       nn.Dropout()]
+        self.proj_seq = nn.Sequential(*proj_layers)  # (B, 256)
+
+        pc_channels = (1024, 512, 256)
         pc_layers = []
-        pc_filters = (3, 64, 64, 64, 128, 1024)
-        pc_affine = (pc_filters[-1], 512, 256)
-        for in_filters, out_filters in zip(pc_filters, pc_filters[1:]):
-            pc_layers.extend([nn.Conv1d(in_filters, out_filters, kernel_size=1),
+        for c_in, c_out in zip(pc_channels, pc_channels[1:]):
+            pc_layers.extend([nn.Linear(c_in, c_out),
                               nn.ReLU(),
-                              nn.BatchNorm1d(out_filters)])
-        pc_layers.append(nn.MaxPool1d(kernel_size=1024))
-        pc_layers.append(View1D())
-        for in_affine, out_affine in zip(pc_affine[:-1], pc_affine[1:]):
-            pc_layers.extend([nn.Linear(in_affine, out_affine),
-                              nn.ReLU(),
-                              nn.BatchNorm1d(out_affine)])
-        self.pc_seq = nn.Sequential(*pc_layers)  # Outputs (B, 1024) feature vector.
+                              nn.BatchNorm1d(c_out)])
+        self.pc_seq = nn.Sequential(*pc_layers)  # (B, 256)
 
-        m = 6
-        proj_layers = []  # (B, 1, 28, 28, M)
-        proj_layers.extend([nn.Conv3d(1, 10, kernel_size=(5, 5, 1)),  # (B, 10, 24, 24, M)
-                            nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 10, 12, 12, M)
-                            nn.ReLU()])
-        proj_layers.extend([nn.Conv3d(10, 20, kernel_size=(5, 5, 1)),  # (B, 20, 8, 8, M)
-                            nn.Dropout3d(),
-                            nn.MaxPool3d(kernel_size=(2, 2, 1)),  # (B, 20, 4, 4, M)
-                            nn.ReLU()])
-        proj_layers.append(View2D())  # (B, 500, M)
-        proj_layers.append(nn.MaxPool1d(kernel_size=m))  # (B, 500, 1)
-        # proj_layers.append(nn.AvgPool1d(kernel_size=m))  # (B, 500, 1)
-        proj_layers.append(View1D())  # (B, 500)
-        proj_layers.extend([nn.Linear(500, 256),
-                            nn.ReLU(),
-                            nn.Dropout()])
-        self.proj_seq = nn.Sequential(*proj_layers)  # Outputs (B, 320) feature vector.
-
-        affine = (256+256, 256, 40)
+        affine = (512, 256, 40)
         affine_layers = []
-        for in_affine, out_affine in zip(affine[:-1], affine[1:-1]):
-            affine_layers.extend([nn.Linear(in_affine, out_affine),
+        for c_in, c_out in zip(affine[:-1], affine[1:-1]):
+            affine_layers.extend([nn.Linear(c_in, c_out),
                                   nn.ReLU(),
                                   nn.Dropout()])
-        # affine_layers.append(nn.Dropout(p=0.7))
-        affine_layers.append(nn.Linear(affine[-2], affine[-1]))
-        affine_layers.append(nn.LogSoftmax(dim=-1))
+        affine_layers.extend([nn.Linear(affine[-2], affine[-1]),
+                              nn.LogSoftmax(dim=-1)])
         self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, pc, proj):
+        pc, trans64 = self.pc_feature_net(pc)
         pc_feat = self.pc_seq(pc)
-        proj_feat = self.proj_seq(proj)
-        return self.affine_seq(torch.cat([pc_feat, proj_feat], dim=-1))
+        proj_feat = self.proj_seq(self.proj_feature_net(proj))
+        return self.affine_seq(torch.cat([pc_feat, proj_feat], dim=-1)), trans64
+
+
+class CuppNetMax(nn.Module):
+    def __init__(self):
+        """
+        Input dim: (B, 3, N)
+        Output dim: (B, num_classes)
+        """
+        super().__init__()
+        self.proj_feature_net = PicNetFeatures()
+        proj_feature_len = self.proj_feature_net.feature_len()
+        self.pc_feature_net = PointNetFeatures()
+
+        proj_layers = [nn.Linear(proj_feature_len, 512),
+                       nn.ReLU(),
+                       nn.BatchNorm1d(512)]
+        self.proj_seq = nn.Sequential(*proj_layers)  # (B, 512)
+
+        pc_layers = [nn.Linear(1024, 512),
+                     nn.ReLU(),
+                     nn.BatchNorm1d(512)]
+        self.pc_seq = nn.Sequential(*pc_layers)  # (B, 512)
+
+        affine = (512, 256, 40)
+        affine_layers = []
+        affine_layers.extend([nn.MaxPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
+                              View1D()])  # (B, 512, 1) --> (B, 512)
+        for c_in, c_out in zip(affine[:-1], affine[1:-1]):
+            affine_layers.extend([nn.Linear(c_in, c_out),
+                                  nn.ReLU(),
+                                  nn.BatchNorm1d(c_out)])
+        affine_layers.extend([nn.Linear(affine[-2], affine[-1]),
+                              nn.LogSoftmax(dim=-1)])
+        self.affine_seq = nn.Sequential(*affine_layers)
+
+    def forward(self, pc, proj):
+        pc_feat = self.pc_seq(self.pc_feature_net(pc))
+        proj_feat = self.proj_seq(self.proj_feature_net(proj))
+        return self.affine_seq(torch.stack([pc_feat, proj_feat], dim=-1))

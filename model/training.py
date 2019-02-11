@@ -181,7 +181,7 @@ class NetTrainer:
         momentum = max([0.01, 0.5 * 0.5 ** (epoch // 20)])
         for seq in self.model.children():
             for layer in seq.children():
-                if type(layer) == torch.nn.BatchNorm1d:
+                if type(layer) is torch.nn.BatchNorm1d:
                     layer.momentum = momentum
         return momentum
 
@@ -277,23 +277,14 @@ class NetTrainer:
             dl_iter = iter(dl)
             for batch_idx in range(num_batches):
                 data = next(dl_iter)
-
                 batch_res = forward_fn(data)
-
-                pbar.set_description(f'{pbar_name} (Loss: {batch_res.loss:.3e},'
-                                     f' Correct: {batch_res.num_correct})')
+                pbar.set_description(f'{pbar_name} (Loss: {batch_res.loss:.3e}, Correct: {batch_res.num_correct})')
                 pbar.update()
-
                 losses.append(batch_res.loss)
                 num_correct += batch_res.num_correct
-
             avg_loss = sum(losses) / num_batches
-            assert (num_correct / num_samples) < 1, f'num_correct={num_correct}, num_samples={num_samples}'
             accuracy = 100. * (num_correct / num_samples)
-            pbar.set_description(f'{pbar_name} '
-                                 f'(Avg. Loss {avg_loss:.3e}, '
-                                 f'Accuracy {accuracy:.1f})')
-
+            pbar.set_description(f'{pbar_name} (Avg. Loss {avg_loss:.3e}, Accuracy {accuracy:.1f})')
         return EpochResult(losses=losses, accuracy=accuracy)
 
     def plot_error(self, fit_res: FitResult):
@@ -329,6 +320,7 @@ class NetTrainer:
 class PointNetTrainer(NetTrainer):
     def __init__(self, model, loss_fn, optimizer, scheduler):
         super().__init__(model, loss_fn, optimizer, scheduler)
+        self.mu = 0.001
 
     def train_batch(self, batch) -> BatchResult:
         x, y = batch
@@ -336,7 +328,7 @@ class PointNetTrainer(NetTrainer):
         self.optimizer.zero_grad()
         y_pred, trans64 = self.model(x)
         eye = torch.eye(64, device=x.device).view(1, 64, 64)
-        loss = self.loss_fn(y_pred, y) + 0.001 * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
+        loss = self.loss_fn(y_pred, y) + self.mu * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
         loss.backward()
         self.optimizer.step()
         num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
@@ -348,12 +340,12 @@ class PointNetTrainer(NetTrainer):
             x, y = x.to(self.device), y.view(-1, ).to(self.device)
             y_pred, trans64 = self.model(x)
             eye = torch.eye(64, device=x.device).view(1, 64, 64)
-            loss = self.loss_fn(y_pred, y) + 0.001 * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
+            loss = self.loss_fn(y_pred, y) + self.mu * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
             num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
             return BatchResult(loss.item(), num_correct.item())
 
 
-class CuppTrainer(NetTrainer):
+class CuppTrainer(PointNetTrainer):
     def __init__(self, model, loss_fn, optimizer, scheduler):
         super().__init__(model, loss_fn, optimizer, scheduler)
 
@@ -361,8 +353,9 @@ class CuppTrainer(NetTrainer):
         pc, proj, y = batch
         pc, proj, y = pc.to(self.device), proj.to(self.device), y.view(-1,).to(self.device)
         self.optimizer.zero_grad()
-        y_pred = self.model(pc, proj)
-        loss = self.loss_fn(y_pred, y)
+        y_pred, trans64 = self.model(pc, proj)
+        eye = torch.eye(64, device=y.device).view(1, 64, 64)
+        loss = self.loss_fn(y_pred, y) + self.mu * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
         loss.backward()
         self.optimizer.step()
         num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
@@ -372,7 +365,8 @@ class CuppTrainer(NetTrainer):
         with torch.no_grad():
             pc, proj, y = batch
             pc, proj, y = pc.to(self.device), proj.to(self.device), y.view(-1, ).to(self.device)
-            y_pred = self.model(pc, proj)
-            loss = self.loss_fn(y_pred, y)
+            y_pred, trans64 = self.model(pc, proj)
+            eye = torch.eye(64, device=y.device).view(1, 64, 64)
+            loss = self.loss_fn(y_pred, y) + self.mu * F.mse_loss(trans64.bmm(trans64.transpose(1, 2)), eye)
             num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
             return BatchResult(loss.item(), num_correct.item())

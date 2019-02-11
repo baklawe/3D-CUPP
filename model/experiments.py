@@ -12,7 +12,7 @@ def get_files_list(list_filename):
     return ['../' + line.rstrip() for line in open(list_filename)]
 
 
-def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=1e-3):
+def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=0):
 
     if not seed:
         seed = random.randint(0, 2**31)
@@ -78,7 +78,7 @@ def load_experiment(filename):
 
 
 if __name__ == '__main__':
-    expr_name = 'PointNet-full2'
+    expr_name = 'PointNet-full-wd0'
     net_type = 'PointNet'
     # net_type = 'CuppNet'
     # net_type = 'PicNet'
