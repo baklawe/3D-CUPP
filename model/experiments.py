@@ -12,12 +12,12 @@ def get_files_list(list_filename):
     return ['../' + line.rstrip() for line in open(list_filename)]
 
 
-def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=0):
+def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=500, lr=1e-3, l2_reg=0):
 
     if not seed:
         seed = random.randint(0, 2**31)
     torch.manual_seed(seed)
-    early_stopping = max((10, epochs//20))
+    early_stopping = 50
     cfg = locals()
 
     train_files = get_files_list('../data/modelnet40_ply_hdf5_2048/train_files.txt')
@@ -32,14 +32,15 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
         ds_train = training.PicNet40Ds(train_files)
         ds_test = training.PicNet40Ds(test_files)
     else:
-        our_model = model.CuppNetMax()
+        our_model = model.CuppNetSumProb()
         ds_train = training.CuppNet40Ds(train_files)
         ds_test = training.CuppNet40Ds(test_files)
 
     dl_train = DataLoader(ds_train, bs_train, shuffle=True)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True)
 
-    loss_fn = F.nll_loss
+    # loss_fn = F.nll_loss
+    loss_fn = F.cross_entropy  # This criterion combines log_softmax and nll_loss in a single function
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
     cfg.update({'optimizer': type(optimizer).__name__})
@@ -57,7 +58,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
 
     fit_res = trainer.fit(dl_train, dl_test, epochs, early_stopping=early_stopping, checkpoints=exp_name)
     save_experiment(exp_name, cfg, fit_res)
-    return
+    return fit_res
 
 
 def save_experiment(run_name, config, fit_res):
@@ -117,10 +118,11 @@ def send_mail(subject: str, files: list, cfg: dict):
 
 
 if __name__ == '__main__':
-    expr_name = 'CuppNet-max-features-dropout'
+    expr_name = 'CuppNet-sum-prob-t2'
     # net_type = 'PointNet'
     net_type = 'CuppNet'
     # net_type = 'PicNet'
-    run_experiment(f'{expr_name}', net_type)
+    fit_results = run_experiment(f'{expr_name}', net_type)
+    best_acc = max(fit_results.test_acc)
     exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
-    send_mail(subject=f'{expr_name} results', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
+    send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)

@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 
 
 def weight_zero(layer):
@@ -217,8 +218,7 @@ class PointNet(nn.Module):
                                   nn.BatchNorm1d(c_out),
                                   nn.ReLU(),
                                   nn.Dropout(p=0.3)])
-        affine_layers.extend([nn.Linear(channels[-1], 40).apply(bias_zero).apply(weight_xavier),
-                              nn.LogSoftmax(dim=-1)])
+        affine_layers.append(nn.Linear(channels[-1], 40).apply(bias_zero).apply(weight_xavier))
         self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, x):
@@ -267,12 +267,11 @@ class PicNet(nn.Module):
         modules.extend([nn.Linear(256, 128),  # (B, 256)
                         nn.ReLU(),
                         nn.Dropout()])
-        modules.extend([nn.Linear(128, 40),  # (B, 40)
-                        nn.LogSoftmax(dim=-1)])
+        modules.append(nn.Linear(128, 40))  # (B, 40)
         self.seq = nn.Sequential(*modules)
 
     def forward(self, x):
-        return self.seq(x)
+        return self.seq(self.feature_net(x))
 
 
 class CuppNet(nn.Module):
@@ -305,8 +304,7 @@ class CuppNet(nn.Module):
             affine_layers.extend([nn.Linear(c_in, c_out),
                                   nn.ReLU(),
                                   nn.Dropout()])
-        affine_layers.extend([nn.Linear(affine[-2], affine[-1]),
-                              nn.LogSoftmax(dim=-1)])
+        affine_layers.append(nn.Linear(affine[-2], affine[-1]))
         self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, pc, proj):
@@ -327,27 +325,27 @@ class CuppNetMax(nn.Module):
         proj_feature_len = self.proj_feature_net.feature_len()
         self.pc_feature_net = PointNetFeatures()
 
-        proj_layers = [nn.Linear(proj_feature_len, 512),
+        proj_layers = [nn.Linear(proj_feature_len, 256),
                        nn.ReLU(),
-                       nn.BatchNorm1d(512)]
+                       nn.BatchNorm1d(256)]
         self.proj_seq = nn.Sequential(*proj_layers)  # (B, 512)
 
-        pc_layers = [nn.Linear(1024, 512),
+        pc_layers = [nn.Linear(1024, 256),
                      nn.ReLU(),
-                     nn.BatchNorm1d(512)]
+                     nn.BatchNorm1d(256)]
         self.pc_seq = nn.Sequential(*pc_layers)  # (B, 512)
 
-        affine = (512, 256)
+        affine = (256, 128)
         affine_layers = []
         affine_layers.extend([nn.MaxPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
+        # affine_layers.extend([nn.AvgPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
                               View1D()])  # (B, 512, 1) --> (B, 512)
         for c_in, c_out in zip(affine, affine[1:]):
             affine_layers.extend([nn.Linear(c_in, c_out),
                                   nn.ReLU(),
                                   nn.BatchNorm1d(c_out),
                                   nn.Dropout()])
-        affine_layers.extend([nn.Linear(256, 40),
-                              nn.LogSoftmax(dim=-1)])
+        affine_layers.append(nn.Linear(128, 40))
         self.affine_seq = nn.Sequential(*affine_layers)
 
     def forward(self, pc, proj):
@@ -355,3 +353,21 @@ class CuppNetMax(nn.Module):
         pc_feat = self.pc_seq(pc)
         proj_feat = self.proj_seq(self.proj_feature_net(proj))
         return self.affine_seq(torch.stack([pc_feat, proj_feat], dim=-1)), trans64
+
+
+class CuppNetSumProb(nn.Module):
+    def __init__(self):
+        """
+        Input dim: (B, 3, N)
+        Output dim: (B, num_classes)
+        """
+        super().__init__()
+        self.point_net = PointNet()
+        self.pic_net = PicNet()
+
+    def forward(self, pc, proj):
+        pc, trans64 = self.point_net(pc)
+        proj = self.pic_net(proj)
+        prob = (F.softmax(pc, dim=-1) + F.softmax(proj, dim=-1)) / 2
+        # TODO: Try adding the log, the outputs before softmax and
+        return prob.log(), trans64
