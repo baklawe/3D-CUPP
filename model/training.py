@@ -229,7 +229,7 @@ class NetTrainer:
                 saved_state = dict(model_state=self.model.state_dict(), fit_res=fit_res)
                 torch.save(saved_state, checkpoint_filename)
                 print(f'*** Saved checkpoint {checkpoints} at epoch {epoch}')
-
+        self.plot_error(fit_res)
         return fit_res
 
     def train_epoch(self, dl_train: DataLoader) -> EpochResult:
@@ -295,7 +295,7 @@ class NetTrainer:
         best_acc = max(fit_res.test_acc)
 
         ax = axes[0]
-        ewb = len(self.test_acc) - (np.argmax(self.test_acc) + 1)
+        ewb = len(fit_res.test_acc) - (np.argmax(fit_res.test_acc) + 1)
         ax.set_title(f'{self.exp_name.capitalize()}, Best Loss: {best_loss:.1e}, Best Acc: {best_acc:.1f}, ewb: {ewb}')
         ax.plot(epochs, fit_res.train_loss, color='b')
         ax.plot(epochs, fit_res.test_loss, color='r')
