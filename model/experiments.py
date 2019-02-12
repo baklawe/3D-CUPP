@@ -32,7 +32,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
         ds_train = training.PicNet40Ds(train_files)
         ds_test = training.PicNet40Ds(test_files)
     else:
-        our_model = model.CuppNetMax()
+        our_model = model.CuppNet()
         ds_train = training.CuppNet40Ds(train_files)
         ds_test = training.CuppNet40Ds(test_files)
 
@@ -117,10 +117,15 @@ def send_mail(subject: str, files: list, cfg: dict):
 
 
 if __name__ == '__main__':
-    expr_name = 'CuppNet-max-features-dropout'
+    # expr_name = 'CuppNet-full-wd0'
     # net_type = 'PointNet'
     net_type = 'CuppNet'
     # net_type = 'PicNet'
-    run_experiment(f'{expr_name}', net_type)
-    exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
-    send_mail(subject=f'{expr_name} results', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
+    l2_reg_list = [0, 0.001, 0.0001, 0.00001]
+    lr_list = [5e-3, 1e-3, 5e-4, 1e-4]
+    for l2_reg in l2_reg_list:
+        for lr in lr_list:
+            expr_name = f'CuppNet-full-lr{lr}-l2{l2_reg}'
+            run_experiment(f'{expr_name}', net_type, lr=lr, l2_reg=l2_reg)
+            exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
+            send_mail(subject=f'{expr_name} results', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
