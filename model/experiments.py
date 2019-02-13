@@ -12,7 +12,7 @@ def get_files_list(list_filename):
     return ['../' + line.rstrip() for line in open(list_filename)]
 
 
-def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=200, lr=1e-3, l2_reg=0):
+def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=300, lr=1e-3, l2_reg=0):
 
     if not seed:
         seed = random.randint(0, 2**31)
@@ -32,7 +32,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
         ds_train = training.PicNet40Ds(train_files)
         ds_test = training.PicNet40Ds(test_files)
     else:
-        our_model = model.CuppNet()
+        our_model = model.CuppNetSumProb()
         ds_train = training.CuppNet40Ds(train_files)
         ds_test = training.CuppNet40Ds(test_files)
 
@@ -122,12 +122,8 @@ if __name__ == '__main__':
     # net_type = 'PointNet'
     net_type = 'CuppNet'
     # net_type = 'PicNet'
-    l2_reg_list = [0, 0.001, 0.0001, 0.00001]
-    lr_list = [5e-3, 1e-3, 5e-4, 1e-4]
-    for l2_reg in l2_reg_list:
-        for lr in lr_list:
-            expr_name = f'CuppNet-full-lr{lr}-l2{l2_reg}'
-            fit_results = run_experiment(f'{expr_name}', net_type, lr=lr, l2_reg=l2_reg)
-            best_acc = max(fit_results.test_acc)
-            exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
-            send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
+    expr_name = f'CuppNet-avg-log-prob-40x40'
+    fit_results = run_experiment(f'{expr_name}', net_type, lr=5e-4)
+    best_acc = max(fit_results.test_acc)
+    exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
+    send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)

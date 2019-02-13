@@ -256,7 +256,7 @@ class PicNetFeatures(nn.Module):
 
 
 class PicNet(nn.Module):
-    def __init__(self, m=6, s=32):
+    def __init__(self, m=6, s=40):
         super().__init__()
         self.feature_net = PicNetFeatures(m=m, s=s)
         c_in = self.feature_net.feature_len()
@@ -338,7 +338,6 @@ class CuppNetMax(nn.Module):
         affine = (256, 128)
         affine_layers = []
         affine_layers.extend([nn.MaxPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
-        # affine_layers.extend([nn.AvgPool1d(kernel_size=2),  # (B, 512, 2) --> (B, 512, 1)
                               View1D()])  # (B, 512, 1) --> (B, 512)
         for c_in, c_out in zip(affine, affine[1:]):
             affine_layers.extend([nn.Linear(c_in, c_out),
@@ -368,6 +367,5 @@ class CuppNetSumProb(nn.Module):
     def forward(self, pc, proj):
         pc, trans64 = self.point_net(pc)
         proj = self.pic_net(proj)
-        prob = (F.softmax(pc, dim=-1) + F.softmax(proj, dim=-1)) / 2
-        # TODO: Try adding the log, the outputs before softmax and
-        return prob.log(), trans64
+        prob = (F.log_softmax(pc, dim=-1) + F.log_softmax(proj, dim=-1)) / 2
+        return prob, trans64

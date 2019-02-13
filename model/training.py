@@ -82,7 +82,7 @@ class ModelNet40Ds(Dataset):
 class PicNet40Ds(ModelNet40Ds):
     def __init__(self, h5_files: List[str]):
         super().__init__(h5_files)
-        self.size = 32
+        self.size = 40
         self.r_lst = [(0, 0, 0), (-np.pi, 0, 0),
                       (0, 0.5*np.pi, 0), (0, -0.5*np.pi, 0), (0.5*np.pi, 0, 0), (-0.5*np.pi, 0, 0)]
         self.m = len(self.r_lst)
