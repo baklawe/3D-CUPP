@@ -15,16 +15,46 @@ import os
 import sys
 import inspect
 import numpy as np
-from training import ModelNet40Ds
 from typing import List
 from sklearn.neighbors import NearestNeighbors
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, parentdir)
-# from utils.normals_Hough.python.lib.python import NormalEstimatorHough as NormalEstimator
+from utils.normals_Hough.python.lib.python import NormalEstimatorHough as NormalEstimator
 
 
-class CreateLBOeigen(ModelNet40Ds):
+class ModelNet40Base(Dataset):
+    def __init__(self, h5_files: List[str]):
+        super().__init__()
+        self.num_points = 1024
+        self.tot_examples = 0
+        self.examples = []
+        self.train = 'train' in h5_files[0]
+        for h5_file in h5_files:
+            current_data, current_label = self.load_h5(h5_file)
+            current_data = current_data[:, 0:self.num_points, :]
+            for i in range(current_data.shape[0]):
+                self.examples.append((current_data[i, :, :], current_label[i, :]))
+            self.tot_examples += current_data.shape[0]
+
+    def __getitem__(self, index):
+        return self.get_pc(index)
+
+    def __len__(self):
+        return self.tot_examples
+
+    def get_pc(self, index):
+        return self.examples[index]
+
+    @staticmethod
+    def load_h5(h5_filename):
+        f = h5py.File(h5_filename)
+        data = f['data'][:]
+        label = f['label'][:]
+        return data, label
+
+
+class CreateEigenLBO(ModelNet40Base):
     """
     This class helps to create the eigenfunction & eigenvalues of the LBO
     """
@@ -37,22 +67,12 @@ class CreateLBOeigen(ModelNet40Ds):
         """
         :return: eigenfunctions & eigenvalues associated with the point cloud.
         """
-        pc, _ = self.get_pc(index)
+        pc, label = self.get_pc(index)
         eigen_val, eigen_vec = self.calc_eigs(*self.create_laplacian(pc))
-        return eigen_val, eigen_vec
+        return eigen_val, eigen_vec, label
 
     def __len__(self):
         return self.tot_examples
-
-    def get_pc(self, index: int):
-        """
-        :param index: point cloud index
-        :return: numpy point cloud (N, 3)
-        """
-        file_ind = index // self.examples_per_file
-        example_ind = index % self.examples_per_file
-        item, _ = self.examples[file_ind]
-        return item[example_ind, :, :]
 
     def get_knn(self, pc):
         """
@@ -82,92 +102,51 @@ class CreateLBOeigen(ModelNet40Ds):
         return sp.linalg.eigh(a=L, b=D, eigvals=(0, self.num_eigen-1))
 
 
-class CreateShapeNet40Ds(ModelNet40Ds):
-    def __init__(self, h5_files: List[str], num_evals: int, num_nbrs: int, t: float):
-        super().__init__(h5_files)
-        self.num_evals = num_evals
-        self.num_nbrs = num_nbrs
-        self.t = t  # Time param for Heat Kernel weights
-
-    def __getitem__(self, index):
-        pc, label = self.get_np_pc(index)
-        e_val, e_vec = self.calc_eigs(*self.create_laplacian(pc.transpose()))
-        # assert e_val.shape == (self.num_evals,), f'im_item.shape={e_val.shape}'
-        # assert e_vec.shape == (1024, self.num_evals), f'im_item.shape={e_vec.shape}'
-        return e_val, e_vec, label
-
-    def get_knn(self, pc):
-        nbrs = NearestNeighbors(n_neighbors=self.num_nbrs+1, algorithm='auto', metric='euclidean').fit(pc)
-        distances, indices = nbrs.kneighbors(pc)
-        return distances, indices
-
-    def create_laplacian(self, pc):
-        """
-        :param pc: (N, 3)
-        :return:
-        """
-        W = np.zeros((pc.shape[0], pc.shape[0]))
-        distances, indices = self.get_knn(pc)
-        heat_weights = np.exp(-distances[:, 1:]**2/self.t).reshape(-1,)
-
-        rows = np.tile(indices[:, 0], reps=self.num_nbrs)
-        cols = indices[:, 1:].transpose().reshape(-1,)
-        W[rows, cols] = heat_weights
-        W = (W + W.transpose()) / 2
-        D = np.diag(np.sum(W, axis=-1))
-        L = D - W
-        return L, D
-
-    def calc_eigs(self, L, D):
-        return sp.linalg.eigh(a=L, b=D, eigvals=(0, self.num_evals-1))
-
-
-class CreateNormals40Ds(ModelNet40Ds):
-    def __init__(self, h5_files: List[str]):
-        super().__init__(h5_files)
-
-    def __getitem__(self, index):
-        pc, _ = self.get_np_pc(index)
-        normals = self.calc_normals(pc)
-        assert normals.shape == (self.num_points, 3), f'im_item.shape={normals.shape}'
-        return normals
-
-    @staticmethod
-    def calc_normals(pc):
-        if pc.shape[0] is 3:
-            pc = pc.transpose()
-        if pc.dtype is not np.dtype('float64'):
-            pc = np.float64(pc)
-        estimator = NormalEstimator.NormalEstimatorHough()
-        estimator.set_points(pc)
-        estimator.set_K(5)
-        estimator.estimate_normals()
-        return np.float32(estimator.get_normals())
-
-
-def create_eigen_dataset(train=True, num_evals=100, num_nbrs=5, t=100):
+def create_eigen_dataset(train=True, num_eigen=100, num_nbrs=5):
     if train:
         name = 'train'
     else:
         name = 'test'
     bs = 2048
-    files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    ds = CreateShapeNet40Ds(files, num_evals=num_evals, num_nbrs=num_nbrs, t=t)
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    ds = CreateEigenLBO(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs)
     dl = DataLoader(ds, bs, shuffle=False, num_workers=20)
 
     dl_iter = iter(dl)
     num_batches = len(dl.batch_sampler)
     for batch_idx in range(num_batches):
-        print(f'Working on file {batch_idx}')
+        print(f'Working on file {batch_idx}', flush=True)
         eigval, eigvec, label = next(dl_iter)
         print(f'eigval.shape={eigval.shape}')
         print(f'eigvec.shape={eigvec.shape}')
         print(f'label.shape={label.shape}')
-        with h5py.File(f'../data/modelnet40_ply_hdf5_2048/eigen_data_{name}{batch_idx}.h5', 'w') as hf:
+        with h5py.File(f'../data/eigen/eigen_data_{name}{batch_idx}.h5', 'w') as hf:
             hf.create_dataset("eigval",  data=eigval)
             hf.create_dataset("eigvec",  data=eigvec)
             hf.create_dataset("label",  data=label)
     return
+
+
+class CreateNormals40Ds(ModelNet40Base):
+    def __init__(self, h5_files: List[str]):
+        super().__init__(h5_files)
+        self.estimator = NormalEstimator.NormalEstimatorHough()
+        self.estimator.set_K(5)
+
+    def __getitem__(self, index):
+        """
+        :param index: point cloud index
+        :return: Normals (N, 3)
+        """
+        pc, _ = self.get_pc(index)
+        normals = self.calc_normals(pc)
+        return normals
+
+    def calc_normals(self, pc):
+        pc = np.float64(pc)
+        self.estimator.set_points(pc)
+        self.estimator.estimate_normals()
+        return np.float32(self.estimator.get_normals())
 
 
 def create_normals_dataset(train=True):
@@ -186,13 +165,13 @@ def create_normals_dataset(train=True):
         print(f'Working on file {batch_idx}')
         normal = next(dl_iter)
         print(f'normals.shape={normal.shape}')
-        with h5py.File(f'../data/modelnet40_ply_hdf5_2048/normal_data_{name}{batch_idx}.h5', 'w') as hf:
+        with h5py.File(f'../data/eigen/normal_data_{name}{batch_idx}.h5', 'w') as hf:
             hf.create_dataset("normal",  data=normal)
     return
 
 
 class EigenNet40Ds(Dataset):
-    def __init__(self, h5_files: List[str], evec=True, c_in=100):
+    def __init__(self, h5_files: List[str], evec, c_in=100):
         super().__init__()
         self.num_points = 1024
         self.tot_examples = 0
@@ -242,15 +221,15 @@ class EigenNet40Ds(Dataset):
 
 
 class HearShapeNet(nn.Module):
-    def __init__(self):
+    def __init__(self, c_in: int):
         """
-        Input dim: (B, 100) Shape spectrum.
+        Input dim: (B, 1, c_in) Shape spectrum.
         output dim: (B, 40).
         """
         super().__init__()
         affine_layers = []
         # for c_in, c_out in zip(channels, channels[1:]):
-        affine_layers.extend([nn.Linear(30, 128),
+        affine_layers.extend([nn.Linear(c_in, 128),
                               nn.ReLU()])
         affine_layers.extend([nn.Linear(128, 128),
                               nn.ReLU(),
@@ -281,8 +260,8 @@ def plot_pc(pc, c=None, title=None):
 
 def train_shape_net(c_in=30, evec=False):
     bs_train, bs_test = 32, 32
-    train_files = get_files_list('../data/modelnet40_ply_hdf5_2048/eigen_train_files.txt')
-    test_files = get_files_list('../data/modelnet40_ply_hdf5_2048/eigen_test_files.txt')
+    train_files = get_files_list('../data/eigen/eigen_train_files.txt')
+    test_files = get_files_list('../data/eigen/eigen_test_files.txt')
 
     ds_train = EigenNet40Ds(train_files, evec=evec, c_in=c_in)
     ds_test = EigenNet40Ds(test_files, evec=evec, c_in=c_in)
@@ -290,14 +269,14 @@ def train_shape_net(c_in=30, evec=False):
     dl_train = DataLoader(ds_train, bs_train, shuffle=True)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True)
 
-    lr = 1e-3
+    lr = 1e-4
     l2_reg = 0
-    our_model = HearShapeNet()
+    our_model = HearShapeNet(c_in=c_in)
     # our_model = SpectralPointNet()
     loss_fn = F.cross_entropy  # This criterion combines log_softmax and nll_loss in a single function
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
-    trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=1e-5)
+    trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler)
 
     expr_name = f'Eigen-t3'
     if os.path.isfile(f'results/{expr_name}.pt'):
@@ -338,18 +317,19 @@ class SpectralPointNet(nn.Module):
 
 
 if __name__ == '__main__':
-    target = 'train'
-    files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{target}_files.txt')
-    ds = CreateLBOeigen(h5_files=files, num_nbrs=5, num_eigen=150)
-    ind = 5
-    pc = ds.get_pc(ind)
-    e_val, e_vec = ds.calc_eigs(*ds.create_laplacian(pc))
-    for i in range(10):
-        plot_pc(pc, e_vec[:, i], title=f'V{i}')
-    plt.show()
+    train_shape_net(c_in=30, evec=False)
+    # target = 'train'
+    # files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{target}_files.txt')
+    # ds = CreateLBOeigen(h5_files=files, num_nbrs=5, num_eigen=150)
+    # ind = 5
+    # pc = ds.get_pc(ind)
+    # e_val, e_vec = ds.calc_eigs(*ds.create_laplacian(pc))
+    # for i in range(10):
+    #     plot_pc(pc, e_vec[:, i], title=f'V{i}')
+    # plt.show()
     # train_shape_net(c_in=30, evec=False)
-    # create_eigen_dataset(train=True, num_evals=100, num_nbrs=5, t=100)
-    # create_eigen_dataset(train=False, num_evals=100, num_nbrs=5, t=100)
+    # create_eigen_dataset(train=True, num_eigen=100, num_nbrs=5)
+    # create_eigen_dataset(train=False, num_eigen=100, num_nbrs=5)
     # create_normals_dataset(train=True)
     # create_normals_dataset(train=False)
 

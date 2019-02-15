@@ -3,3 +3,5 @@ data/
 model/playtime.py
 model/results/
 model/__pycache__/
+utils/
+CppFiles/
