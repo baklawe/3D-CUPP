@@ -1,3 +1,4 @@
+import os
 import h5py
 from sklearn.neighbors import NearestNeighbors
 import networkx as nx
@@ -8,6 +9,11 @@ from laplacian import ModelNet40Base
 from typing import List
 from experiments import get_files_list
 from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from training import NetTrainer
 
 
 class CreateSpectralDist(ModelNet40Base):
@@ -93,9 +99,148 @@ def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=5):
     return
 
 
+class Spectral40Ds(Dataset):
+    def __init__(self, h5_files: List[str], size: int):
+        super().__init__()
+        self.data_name = 'spectral_dist'
+        self.size = size
+        self.tot_examples = 0
+        self.examples = []
+        self.train = 'train' in h5_files[0]
+        for h5_file in h5_files:
+            current_data, current_label = self.load_h5(h5_file)
+            current_data = current_data[:, 0:self.size, 0:self.size]
+            for i in range(current_data.shape[0]):
+                self.examples.append((current_data[i, :, :][np.newaxis, ...], current_label[i, :]))
+            self.tot_examples += current_data.shape[0]
+
+    def __getitem__(self, index):
+        item, label = self.get_numpy_data(index)
+        item_tensor = torch.from_numpy(item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return item_tensor, label_tensor
+
+    def __len__(self):
+        return self.tot_examples
+
+    def get_numpy_data(self, index):
+        return self.examples[index]
+
+    def load_h5(self, h5_filename):
+        f = h5py.File(h5_filename)
+        data = f[self.data_name][:]
+        label = f['label'][:]
+        return data, label
+
+
+class SpectralSimpleNet(nn.Module):
+    def __init__(self, mat_size: int):
+        super().__init__()
+        modules = []  # (B, 1, S, S)
+        modules.extend([nn.Conv2d(1, 16, kernel_size=(5, 5)),  # (B, 16, S-4, S-4)
+                        nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 16, S/2-2, S/2-2)
+                        nn.ReLU()])
+        modules.extend([nn.Conv2d(16, 32, kernel_size=(5, 5)),  # (B, 32, S/2-6, S/2-6)
+                        nn.Dropout2d(),
+                        nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 32, S/4-3, S/4-3)
+                        nn.ReLU()])
+        modules.extend([nn.Conv2d(32, 64, kernel_size=(5, 5)),  # (B, 64, S/4-7, S/4-7)
+                        nn.Dropout2d(),
+                        # nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 64, S/8-7, S/2-7)
+                        nn.ReLU()])
+        self.feature_seq = nn.Sequential(*modules)
+        self.num_features = int(64 * (mat_size / 4 - 7) ** 2)
+        modules = []
+        modules.extend([nn.Linear(self.num_features, 256),  # (B, 256)
+                        nn.ReLU(),
+                        nn.Dropout()])
+        modules.extend([nn.Linear(256, 128),  # (B, 256)
+                        nn.ReLU(),
+                        nn.Dropout()])
+        modules.append(nn.Linear(128, 40))  # (B, 40)
+        self.seq = nn.Sequential(*modules)
+
+    def forward(self, x):
+        bs = x.shape[0]
+        x = self.feature_seq(x).view(bs, self.num_features)
+        return self.seq(x)
+
+
+class SpectralSimpleNetBn(nn.Module):
+    def __init__(self, mat_size: int):
+        super().__init__()
+        modules = []  # (B, 1, S, S)
+        modules.extend([nn.Conv2d(1, 16, kernel_size=(5, 5)),  # (B, 16, S-4, S-4)
+                        nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 16, S/2-2, S/2-2)
+                        nn.ReLU()])
+        modules.extend([nn.Conv2d(16, 32, kernel_size=(5, 5)),  # (B, 32, S/2-6, S/2-6)
+                        nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 32, S/4-3, S/4-3)
+                        nn.ReLU(),
+                        nn.BatchNorm2d(32)])
+        modules.extend([nn.Conv2d(32, 64, kernel_size=(5, 5)),  # (B, 64, S/4-7, S/4-7)
+                        # nn.Dropout2d(),
+                        # nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 64, S/8-7, S/2-7)
+                        nn.ReLU(),
+                        nn.BatchNorm2d(64)])
+        self.feature_seq = nn.Sequential(*modules)
+        self.num_features = int(64 * (mat_size / 4 - 7) ** 2)
+        modules = []
+        modules.extend([nn.Linear(self.num_features, 256),  # (B, 256)
+                        nn.ReLU(),
+                        nn.BatchNorm1d(256)])
+        modules.extend([nn.Linear(256, 128),  # (B, 256)
+                        nn.ReLU(),
+                        nn.BatchNorm1d(128)])
+        modules.append(nn.Linear(128, 40))  # (B, 40)
+        self.seq = nn.Sequential(*modules)
+
+    def forward(self, x):
+        bs = x.shape[0]
+        x = self.feature_seq(x).view(bs, self.num_features)
+        return self.seq(x)
+
+
+def train_spectral_net(matrix_size):
+    bs_train, bs_test = 32, 32
+    train_files = get_files_list('../data/spectral/spectral_train_files.txt')
+    test_files = get_files_list('../data/spectral/spectral_test_files.txt')
+
+    ds_train = Spectral40Ds(train_files, size=matrix_size)
+    ds_test = Spectral40Ds(test_files, size=matrix_size)
+
+    dl_train = DataLoader(ds_train, bs_train, shuffle=True)
+    dl_test = DataLoader(ds_test, bs_test, shuffle=True)
+
+    lr = 1e-3
+    min_lr = 1e-5
+    l2_reg = 0
+    our_model = SpectralSimpleNet(mat_size=matrix_size)
+    loss_fn = F.cross_entropy
+    optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.7)
+    trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
+
+    expr_name = f'Spectral-t3'
+    if os.path.isfile(f'results/{expr_name}.pt'):
+        os.remove(f'results/{expr_name}.pt')
+    fit_res = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
+    return
+
+
 if __name__ == '__main__':
-    create_spectral_dataset(train=True)
-    create_spectral_dataset(train=False)
+    name = 'train'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    data_set = CreateSpectralDist(h5_files=pc_files, num_nbrs=5, num_eigen=32)
+    import time
+    start_time = time.time()
+    lst = []
+    num_examples = 10
+    for ind in [*range(num_examples)]:
+        sd, label = data_set.__getitem__(ind)
+        lst.append((sd, label))
+    print(f'--- {(time.time() - start_time)/num_examples} seconds ---')
+
+    # train_spectral_net(matrix_size=36)
 
 # def load_h5(h5_filename):
 #     f = h5py.File(h5_filename)

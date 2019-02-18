@@ -166,7 +166,7 @@ class FitResult(NamedTuple):
 
 
 class NetTrainer:
-    def __init__(self, model, loss_fn, optimizer, scheduler):
+    def __init__(self, model, loss_fn, optimizer, scheduler, bn_decay: bool = False, min_lr: float = 1e-4):
         self.model = model
         self.loss_fn = loss_fn
         self.optimizer = optimizer
@@ -175,6 +175,8 @@ class NetTrainer:
         self.device = torch.device('cuda')
         model.to(self.device)
         self.exp_name = None
+        self.bn_decay = bn_decay
+        self.min_lr = min_lr
 
     def update_bn_momentum(self, epoch):
         # Update BatchNorm momentum, start with 0.5 and every 20 epochs multiply by 0.5, clip to 0.01
@@ -186,9 +188,8 @@ class NetTrainer:
         return momentum
 
     def optimizer_lr_step(self):
-        min_lr = 1e-5
         lr = self.scheduler.get_lr()[0]
-        if lr > min_lr:
+        if lr > self.min_lr:
             self.scheduler.step()
             lr = self.scheduler.get_lr()[0]
         return lr
@@ -213,9 +214,12 @@ class NetTrainer:
 
         for epoch in range(start_epoch, num_epochs+1):
             lr = self.optimizer_lr_step()
-            momentum = self.update_bn_momentum(epoch=epoch-1)
 
-            print(f'--- EPOCH {epoch}/{num_epochs}, LR: {lr:.3e}, BN: {momentum:.3f}')
+            if self.bn_decay:
+                momentum = self.update_bn_momentum(epoch=epoch-1)
+                print(f'--- EPOCH {epoch}/{num_epochs}, LR: {lr:.3e}, BN: {momentum:.3f}')
+            else:
+                print(f'--- EPOCH {epoch}/{num_epochs}, LR: {lr:.3e}')
 
             fit_res.add_epoch_train(self.train_epoch(dl_train))
             fit_res.add_epoch_test(self.test_epoch(dl_test))
