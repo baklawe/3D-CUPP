@@ -1,6 +1,7 @@
 .idea/
 data/
 model/playtime.py
+model/*.so
 model/results/
 model/__pycache__/
 utils/

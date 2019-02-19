@@ -1,7 +1,7 @@
 // Program to find Dijkstra's shortest path using 
 // priority_queue in STL
 // Complie this file using this command
-// c++ -O3 -Wall -shared -std=c++11 -fPIC `python3 -m pybind11 --includes` example.cpp -o example`python3-config --extension-suffix`
+// c++ -O3 -Wall -shared -std=c++11 -fPIC `python3 -m pybind11 --includes` distance_mat.cpp -o distance_mat`python3-config --extension-suffix`
 
 #include<bits/stdc++.h>
 using namespace std;
@@ -47,9 +47,6 @@ vector<double> shortestPath(vector<pair<int,double > > adj[], int num_vert, int 
         }
     }
     return dist;
-//    printf("Vertex Distance from Source\n");
-//    for (int i = 0; i < V; ++i)
-//        printf("%d \t\t %d\n", i, dist[i]);
 }
 
 

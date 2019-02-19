@@ -22,7 +22,7 @@ class Spectral40Ds(Dataset):
             current_data, current_label = self.load_h5(h5_file)
             current_data = current_data[:, 0:self.size, 0:self.size]
             for i in range(current_data.shape[0]):
-                self.examples.append((current_data[i, :, :][np.newaxis, ...], current_label[i, :]))
+                self.examples.append((np.expand_dims(current_data[i, :, :], axis=0), current_label[i, :]))
             self.tot_examples += current_data.shape[0]
 
     def __getitem__(self, index):
@@ -203,6 +203,18 @@ def resnet34(pretrained=False, **kwargs):
     return model
 
 
+class SpectralDiag(Spectral40Ds):
+    def __init__(self, h5_files: List[str], size: int):
+        super().__init__(h5_files=h5_files, size=size)
+
+    def __getitem__(self, index):
+        item, label = self.get_numpy_data(index)  # (1, 32, 32)
+        item = np.diag(item[0, :, :])
+        item_tensor = torch.from_numpy(item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return item_tensor, label_tensor
+
+
 class SpectralSimpleNetBn(nn.Module):
     def __init__(self, mat_size: int):
         super().__init__()
@@ -234,9 +246,9 @@ class SpectralSimpleNetBn(nn.Module):
     def forward(self, x):
         bs = x.shape[0]
         x = self.feature_seq(x)
-        # print(f'x.shape={x.shape}')
         x = x.view(bs, self.num_features)
-        return self.seq(x)
+        x = self.seq(x)
+        return x
 
 
 class SpectralSimpleNet(nn.Module):
@@ -269,7 +281,13 @@ class SpectralSimpleNet(nn.Module):
     def forward(self, x):
         bs = x.shape[0]
         x = self.feature_seq(x).view(bs, self.num_features)
-        return self.seq(x)
+        x = self.seq(x)
+        if torch.sum(torch.isnan(x)).item() != 0:
+            print(x)
+        # print('torch.sum(torch.isinf(y_pred))', ))
+        # print('torch.sum(torch.isnan(y_pred))', torch.sum(torch.isnan(y_pred)))
+
+        return F.log_softmax(x, dim=-1)
 
 
 def train_spectral_net(matrix_size):
@@ -280,12 +298,12 @@ def train_spectral_net(matrix_size):
     ds_train = Spectral40Ds(train_files, size=matrix_size)
     ds_test = Spectral40Ds(test_files, size=matrix_size)
 
-    dl_train = DataLoader(ds_train, bs_train, shuffle=True)
-    dl_test = DataLoader(ds_test, bs_test, shuffle=True)
+    dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
+    dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    lr = 0.5*1e-3
+    lr = 1e-5
     min_lr = 1e-5
-    l2_reg = 0
+    l2_reg = 1e-3
     # our_model = ResNet(BasicBlock, [2, 2, 2, 2])
     # our_model = SpectralSimpleNet(mat_size=matrix_size)
     our_model = SpectralSimpleNetBn(mat_size=matrix_size)
@@ -297,7 +315,7 @@ def train_spectral_net(matrix_size):
     expr_name = f'Spectral-resnet-'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
-    fit_res = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
+    _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
     return
 
 

@@ -26,13 +26,11 @@ sys.path.insert(0, parentdir)
 class ModelNet40Base(Dataset):
     def __init__(self, h5_files: List[str]):
         super().__init__()
-        self.num_points = 1024
         self.tot_examples = 0
         self.examples = []
         self.train = 'train' in h5_files[0]
         for h5_file in h5_files:
             current_data, current_label = self.load_h5(h5_file)
-            current_data = current_data[:, 0:self.num_points, :]
             for i in range(current_data.shape[0]):
                 self.examples.append((current_data[i, :, :], current_label[i, :]))
             self.tot_examples += current_data.shape[0]

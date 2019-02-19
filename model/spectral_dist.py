@@ -1,7 +1,6 @@
 import os
 import h5py
 from sklearn.neighbors import NearestNeighbors
-import networkx as nx
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
@@ -14,31 +13,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from training import NetTrainer
+import distance_mat
 
 
 class CreateSpectralDist(ModelNet40Base):
     """
     This class helps to create the eigenfunction & eigenvalues of the LBO
     """
-    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int, jitter: bool):
         super().__init__(h5_files=h5_files)
         self.num_nbrs = num_nbrs
         self.num_eigen = num_eigen
-        self.num_points = 1024
+        self.num_points = 2048
+        self.jitter = jitter
 
     def __getitem__(self, index):
         """
         :return: eigenfunctions & eigenvalues associated with the point cloud.
         """
         pc, label = self.get_pc(index)
-        src, target, edges = self.get_knn(pc)
+        pc = pc[0:self.num_points, :]
+        src, target, wt = self.get_knn(pc)
         L, D = self.create_laplacian(src, target)
-        dist_mat = self.create_distance_mat(edges)
+        dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
         spectral_dist = self.get_spectral_dist(L, D, dist_mat)
+        assert (np.sum(np.isinf(spectral_dist)) is 0 and np.sum(np.isnan(spectral_dist)) is 0)
         return spectral_dist, label
 
     def __len__(self):
         return self.tot_examples
+
+    @staticmethod
+    def jitter_pc(pc, sigma=0.01, clip=0.05):
+        assert (clip > 0)
+        noise = np.clip(sigma * np.random.randn(*pc.shape), -1 * clip, clip)
+        return pc + noise
 
     def get_knn(self, pc):
         # +1 including the point itself
@@ -46,9 +55,8 @@ class CreateSpectralDist(ModelNet40Base):
         distances, indices = nbrs.kneighbors(pc)  # (N, num_nbrs + 1)
         src = np.tile(indices[:, 0], reps=self.num_nbrs)  # (N * num_nbrs,)
         target = indices[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
-        dist = distances[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
-        edges = [(src[i], target[i], {'weight': dist[i]}) for i in range(src.shape[0])]
-        return src, target, edges
+        wt = distances[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
+        return src, target, wt
 
     def create_laplacian(self, rows, cols):
         """
@@ -61,29 +69,19 @@ class CreateSpectralDist(ModelNet40Base):
         L = D - W
         return L, D
 
-    def create_distance_mat(self, edges):
-        G = nx.Graph()
-        G.add_nodes_from([*range(self.num_points)])
-        G.add_edges_from(edges)
-        length = dict(nx.all_pairs_dijkstra_path_length(G))
-        dist_mat = np.zeros((self.num_points, self.num_points))
-        for i in [*range(self.num_points)]:
-            dist_mat[i, np.fromiter(length[i].keys(), int)] = np.fromiter(length[i].values(), float)
-        return dist_mat
-
     def get_spectral_dist(self, L, D, dist_mat):
         _, eigen_vec = sp.linalg.eigh(a=L, b=D, eigvals=(1, self.num_eigen))
         return eigen_vec.transpose() @ dist_mat @ eigen_vec
 
 
-def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=5):
+def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=10):
     if train:
         name = 'train'
     else:
         name = 'test'
     bs = 2048
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    ds = CreateSpectralDist(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs)
+    ds = CreateSpectralDist(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, jitter=False)
     dl = DataLoader(ds, bs, shuffle=False, num_workers=7)
 
     dl_iter = iter(dl)
@@ -223,103 +221,13 @@ def train_spectral_net(matrix_size):
     expr_name = f'Spectral-t3'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
-    fit_res = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
+    _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
     return
 
 
 if __name__ == '__main__':
-    name = 'train'
-    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    data_set = CreateSpectralDist(h5_files=pc_files, num_nbrs=5, num_eigen=32)
-    import time
-    start_time = time.time()
-    lst = []
-    num_examples = 10
-    for ind in [*range(num_examples)]:
-        sd, label = data_set.__getitem__(ind)
-        lst.append((sd, label))
-    print(f'--- {(time.time() - start_time)/num_examples} seconds ---')
-
-    # train_spectral_net(matrix_size=36)
-
-# def load_h5(h5_filename):
-#     f = h5py.File(h5_filename)
-#     data = f['data'][:]
-#     label = f['label'][:]
-#     return data, label
-
-
-# def get_knn(pc):
-#     num_nbrs = 5
-#     nbrs = NearestNeighbors(n_neighbors=num_nbrs+1, algorithm='auto', metric='euclidean').fit(pc)  # +1 including the point itself
-#     distances, indices = nbrs.kneighbors(pc)  # (N, num_nbrs + 1)
-#     src = np.tile(indices[:, 0], reps=num_nbrs)  # (N * num_nbrs,)
-#     target = indices[:, 1:].transpose().reshape(-1,)  # (N * num_nbrs,)
-#     dist = distances[:, 1:].transpose().reshape(-1,)  # (N * num_nbrs,)
-#     edges = [(src[i], target[i], {'weight': dist[i]}) for i in range(src.shape[0])]
-#     return src, target, edges
-
-
-# def create_laplacian(N, rows, cols):
-#     """
-#     :return: L, D. both (N, N)
-#     """
-#     W = np.zeros((N, N))
-#     W[rows, cols] = 1
-#     W[cols, rows] = 1
-#     D = np.diag(np.sum(W, axis=-1))
-#     L = D - W
-#     return L, D
-
-
-# def create_distance_mat(num_points, edges):
-#     G = nx.Graph()
-#     G.add_nodes_from([*range(num_points)])
-#     G.add_edges_from(edges)
-#     length = dict(nx.all_pairs_dijkstra_path_length(G))
-#     dist_mat = np.zeros((num_points, num_points))
-#     for i in [*range(num_points)]:
-#         dist_mat[i, np.fromiter(length[i].keys(), int)] = np.fromiter(length[i].values(), float)
-#     return dist_mat
-
-
-# def get_spectral_dist(L, D, dist_mat, num_eigen):
-#     _, eigen_vec = sp.linalg.eigh(a=L, b=D, eigvals=(1, num_eigen))
-#     return eigen_vec.transpose() @ dist_mat @ eigen_vec
-
-
-# def spectral_dist_from_pc(ind):
-#     num_points = 1024
-#     h5_file = '../data/modelnet40_ply_hdf5_2048/ply_data_test1.h5'
-#     current_data, current_label = load_h5(h5_file)
-#     pc = current_data[ind, 0:num_points, :]
-#     label = current_label[ind, :]
-#     src, target, edges = get_knn(pc)
-#     L, D = create_laplacian(num_points, src, target)
-#
-#     dist_mat = create_distance_mat(num_points, edges)
-#     sd = get_spectral_dist(L, D, dist_mat, num_eigen=100)
-#     return sd, label
-
-
-# import time
-# start_time = time.time()
-# lst = []
-# for ind in [*range(10)]:
-#     sd, label = spectral_dist_from_pc(ind)
-#     lst.append((sd, label))
-    # plt.figure()
-    # plt.imshow(sd, extent=[0, 1, 0, 1])
-    # plt.colorbar()
-    # plt.title(f'{label}')
-
-# print(f'--- {time.time() - start_time} seconds ---')
-# plt.show()
-# for i in [0,1,2]:
-#     print('{}'.format(length[i][0]))
-    # print('{}: {}'.format(node, length[2][node]))
-# print(*nx.all_pairs_dijkstra_path_length(G))
-# print(len(edges))
+    create_spectral_dataset(train=True, num_eigen=64, num_nbrs=10)
+    create_spectral_dataset(train=False, num_eigen=64, num_nbrs=10)
 
 
 
