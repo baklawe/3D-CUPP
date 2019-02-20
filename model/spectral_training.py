@@ -27,6 +27,10 @@ class Spectral40Ds(Dataset):
 
     def __getitem__(self, index):
         item, label = self.get_numpy_data(index)
+        assert (np.sum(np.isinf(item)) < 1), f'item inf in index {index}'
+        assert (np.sum(np.isnan(item)) < 1), f'item nan in index {index}'
+        if self.train:
+            item = self.rand_sign(item)
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
@@ -42,6 +46,13 @@ class Spectral40Ds(Dataset):
         data = f[self.data_name][:]
         label = f['label'][:]
         return data, label
+
+    def rand_sign(self, mat):
+        sign = np.random.choice([-1, 1], size=self.size)
+        sign = np.reshape(sign, (self.size, 1))
+        mat = np.multiply(sign.transpose(), mat)
+        mat = np.multiply(mat, sign)
+        return mat
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -209,10 +220,59 @@ class SpectralDiag(Spectral40Ds):
 
     def __getitem__(self, index):
         item, label = self.get_numpy_data(index)  # (1, 32, 32)
-        item = np.diag(item[0, :, :])
+        item = np.diag(item[0, :, :])  # (32,)
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
+
+
+class SpectralFcNet(nn.Module):
+    def __init__(self, c_in: int):
+        super().__init__()
+        modules = []
+        filters = (c_in, 128, 256, 128)
+        for i, (c_in, c_out) in enumerate(zip(filters, filters[1:]), start=1):
+            modules.extend([nn.Linear(c_in, c_out), nn.ReLU()])
+            if i is not 1:
+                modules.append(nn.BatchNorm1d(c_out))
+        modules.append(nn.Linear(filters[-1], 40))  # (B, 40)
+        self.seq = nn.Sequential(*modules)
+
+    def forward(self, x):
+        return self.seq(x)
+
+
+class SpectralConv1dNet(nn.Module):
+    def __init__(self, c_in: int):
+        super().__init__()
+        modules = []
+        filters = (1, 16, 32, 64)
+        # for i, (c_in, c_out) in enumerate(zip(filters, filters[1:]), start=1):
+        #     modules.extend([nn.Conv1d(c_in, c_out, kernel_size=3),
+        #                     # nn.MaxPool1d(kernel_size=2),
+        #                     nn.ReLU()])
+        #     if i is not 1:
+        #         modules.append(nn.BatchNorm1d(c_out))
+
+        modules.extend([nn.Conv1d(1, 16, kernel_size=3),  # (B, 16, 30)
+                        # nn.MaxPool1d(kernel_size=2),  # (B, 16, 15)
+                        nn.ReLU()])
+        modules.extend([nn.Conv1d(16, 32, kernel_size=3),  # (B, 32, 28)
+                        nn.MaxPool1d(kernel_size=2),  # (B, 32, 14)
+                        nn.ReLU()])
+        modules.extend([nn.Conv1d(32, 64, kernel_size=3),  # (B, 64, 12)
+                        nn.ReLU()])
+        self.conv_seq = nn.Sequential(*modules)
+        modules = []
+        modules.append(nn.Linear(64 * 12, 40))  # (B, 40)
+        self.seq = nn.Sequential(*modules)
+
+    def forward(self, x):
+        x = x.view(x.shape[0], 1, x.shape[1])
+        x = self.conv_seq(x)
+        # print(f'x.shape={x.shape}')
+        x = x.view(x.shape[0], -1)
+        return self.seq(x)
 
 
 class SpectralSimpleNetBn(nn.Module):
@@ -292,27 +352,32 @@ class SpectralSimpleNet(nn.Module):
 
 def train_spectral_net(matrix_size):
     bs_train, bs_test = 32, 32
-    train_files = get_files_list('../data/spectral/spectral_train_files.txt')
-    test_files = get_files_list('../data/spectral/spectral_test_files.txt')
+    train_files = get_files_list('../data/heat/spectral_train_files.txt')
+    test_files = get_files_list('../data/heat/spectral_test_files.txt')
 
     ds_train = Spectral40Ds(train_files, size=matrix_size)
     ds_test = Spectral40Ds(test_files, size=matrix_size)
+    #
+    # ds_train = SpectralDiag(train_files, size=matrix_size)
+    # ds_test = SpectralDiag(test_files, size=matrix_size)
 
     dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    lr = 1e-5
+    lr = 1e-4
     min_lr = 1e-5
-    l2_reg = 1e-3
-    # our_model = ResNet(BasicBlock, [2, 2, 2, 2])
+    l2_reg = 1e-5
+    our_model = ResNet(BasicBlock, [2, 2, 2, 2])
     # our_model = SpectralSimpleNet(mat_size=matrix_size)
-    our_model = SpectralSimpleNetBn(mat_size=matrix_size)
+    # our_model = SpectralSimpleNetBn(mat_size=matrix_size)
+    # our_model = SpectralFcNet(c_in=matrix_size)
+    # our_model = SpectralConv1dNet(c_in=matrix_size)
     loss_fn = F.cross_entropy
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.7)
     trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
 
-    expr_name = f'Spectral-resnet-'
+    expr_name = f'Spectral-resnet-heat1024-lr{lr}'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
     _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
