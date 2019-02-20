@@ -7,6 +7,8 @@ from typing import List
 from experiments import get_files_list
 from torch.utils.data import DataLoader
 import distance_mat
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial.distance import cdist
 
 
 class CreateSpectralDist(ModelNet40Base):
@@ -18,7 +20,6 @@ class CreateSpectralDist(ModelNet40Base):
         self.num_nbrs = num_nbrs
         self.num_eigen = num_eigen
         self.num_points = 1024
-        self.radius = 0.07
         self.t = 1e-2
 
     def __getitem__(self, index):
@@ -28,14 +29,10 @@ class CreateSpectralDist(ModelNet40Base):
         pc, label = self.get_pc(index)
         pc = pc[0:self.num_points, :]
         src, target, wt = self.get_knn(pc)
+        src, target, wt = self.connect_graph(pc, src, target, wt)
         L, D = self.create_laplacian(src, target, wt)
         dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
-        dist_mat[dist_mat == np.inf] = 0
-        assert (np.sum(np.isinf(dist_mat)) < 1), f'dist inf in index {index}'
-        assert (np.sum(np.isnan(dist_mat)) < 1), f'dist nan in index {index}'
         spectral_dist, eigen_val = self.get_spectral_dist(L, D, dist_mat)
-        assert (np.sum(np.isinf(spectral_dist)) < 1), f'spectral_dist inf in index {index}'
-        assert (np.sum(np.isnan(spectral_dist)) < 1), f'spectral_dist nan in index {index}'
         print(f'Got index {index}')
         return spectral_dist, eigen_val, label
 
@@ -51,12 +48,25 @@ class CreateSpectralDist(ModelNet40Base):
         wt = distances[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
         return src, target, wt
 
-    def find_nbrs(self, pc):
-        nbrs = NearestNeighbors(n_neighbors=self.num_nbrs + 1, algorithm='auto', metric='euclidean').fit(pc)
-        distances, indices = nbrs.kneighbors(pc)  # (N, num_nbrs + 1)
-        src = np.tile(indices[:, 0], reps=self.num_nbrs)  # (N * num_nbrs,)
-        target = indices[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
-        wt = distances[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
+    def connect_graph(self, pc, src, target, wt):
+        W = np.zeros((self.num_points, self.num_points))
+        W[src, target] = 1
+        n_components, labels = connected_components(csgraph=W, directed=False, return_labels=True)
+        while n_components is not 1:
+            part1 = pc[labels == 0, :]
+            part2 = pc[labels != 0, :]
+            y = cdist(part1, part2, 'euclidean')
+            y_flat = y.ravel()
+            idx = np.argsort(y_flat)[0:5:1]
+            new_wt = y_flat[idx]
+            idx = np.column_stack(np.unravel_index(idx, y.shape))
+            new_src = np.argwhere(labels == 0)[idx[:, 0]]
+            new_trg = np.argwhere(labels != 0)[idx[:, 1]]
+            W[new_src, new_trg] = 1
+            src = np.concatenate((src.reshape(-1, ), new_src.reshape(-1, )), axis=0)
+            target = np.concatenate((target.reshape(-1, ), new_trg.reshape(-1, )), axis=0)
+            wt = np.concatenate((wt.reshape(-1, ), new_wt.reshape(-1, )), axis=0)
+            n_components, labels = connected_components(csgraph=W, directed=False, return_labels=True)
         return src, target, wt
 
     def create_laplacian(self, rows, cols, wt):
@@ -68,7 +78,6 @@ class CreateSpectralDist(ModelNet40Base):
         :return: L, D. both (N, N)
         """
         W = np.zeros((self.num_points, self.num_points))
-
         if self.t != 0:
             heat_w = np.exp(-(wt ** 2) / (4 * self.t))
         else:
@@ -85,7 +94,7 @@ class CreateSpectralDist(ModelNet40Base):
         return spectral_dist, eigen_val
 
 
-def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=10):
+def create_spectral_dataset(train, num_eigen, num_nbrs, num_workers):
     if train:
         name = 'train'
     else:
@@ -94,7 +103,7 @@ def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=10):
     dest_dir = 'heat'
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
     ds = CreateSpectralDist(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs)
-    dl = DataLoader(ds, bs, shuffle=False, num_workers=8)
+    dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
 
     files_list = []
     dl_iter = iter(dl)
@@ -118,8 +127,7 @@ def create_spectral_dataset(train=True, num_eigen=100, num_nbrs=10):
 
 
 if __name__ == '__main__':
-    create_spectral_dataset(train=True, num_eigen=64, num_nbrs=5)
-    create_spectral_dataset(train=False, num_eigen=64, num_nbrs=5)
-
+    create_spectral_dataset(train=True, num_eigen=64, num_nbrs=10, num_workers=8)
+    create_spectral_dataset(train=False, num_eigen=64, num_nbrs=10, num_workers=8)
 
 

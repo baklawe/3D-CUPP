@@ -364,8 +364,8 @@ def train_spectral_net(matrix_size):
     dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    lr = 1e-4
-    min_lr = 1e-5
+    lr = 1e-3
+    min_lr = 2e-5
     l2_reg = 1e-5
     our_model = ResNet(BasicBlock, [2, 2, 2, 2])
     # our_model = SpectralSimpleNet(mat_size=matrix_size)
@@ -377,7 +377,7 @@ def train_spectral_net(matrix_size):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.7)
     trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
 
-    expr_name = f'Spectral-resnet-heat1024-lr{lr}'
+    expr_name = f'Spectral-resnet-10nbrs-lr{lr}'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
     _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
