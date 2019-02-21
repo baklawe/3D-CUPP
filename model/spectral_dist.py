@@ -15,11 +15,11 @@ class CreateSpectralDist(ModelNet40Base):
     """
     This class helps to create the eigenfunction & eigenvalues of the LBO
     """
-    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int, num_points: int):
         super().__init__(h5_files=h5_files)
         self.num_nbrs = num_nbrs
         self.num_eigen = num_eigen
-        self.num_points = 1024
+        self.num_points = num_points
         self.t = 1e-2
 
     def __getitem__(self, index):
@@ -126,8 +126,160 @@ def create_spectral_dataset(train, num_eigen, num_nbrs, num_workers):
     return
 
 
+class CreateGilDist(CreateSpectralDist):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int):
+        super().__init__(h5_files=h5_files, num_nbrs=num_nbrs, num_eigen=num_eigen)
+
+    def __getitem__(self, index):
+        """
+        :return: eigenfunctions & eigenvalues associated with the point cloud.
+        """
+        pc, label = self.get_pc(index)
+        pc = pc[0:self.num_points, :]
+        src, target, wt = self.get_knn(pc)
+        src, target, wt = self.connect_graph(pc, src, target, wt)
+        dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
+        spectral_dist, eigen_val = self.get_gil_dist(dist_mat)
+        print(f'Got index {index}')
+        return spectral_dist, eigen_val, label
+
+    def get_gil_dist(self, dist_mat):
+        eigen_val, eigen_vec = sp.linalg.eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
+        gil_dist = np.diag(eigen_vec.transpose() @ dist_mat @ eigen_vec)
+        return gil_dist, eigen_val
+
+
+def create_gil_dataset(train, num_eigen, num_nbrs, num_workers):
+    if train:
+        name = 'train'
+    else:
+        name = 'test'
+    bs = 512
+    dest_dir = 'gil'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    ds = CreateGilDist(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs)
+    dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
+
+    files_list = []
+    dl_iter = iter(dl)
+    num_batches = len(dl.batch_sampler)
+    for batch_idx in range(num_batches):
+        print(f'Working on file {batch_idx}', flush=True)
+        gil_dist, eigen_val, label = next(dl_iter)
+        print(f'gil_dist.shape={gil_dist.shape}')
+        print(f'eigen_val.shape={eigen_val.shape}')
+        print(f'label.shape={label.shape}')
+        file_name = f'data/{dest_dir}/spectral_data_{name}{batch_idx}.h5'
+        files_list.append(file_name)
+        with h5py.File('../' + file_name, 'w') as hf:
+            hf.create_dataset("gil_dist", data=gil_dist)
+            hf.create_dataset("eigen_val", data=eigen_val)
+            hf.create_dataset("label", data=label)
+    txt_name = f'../data/{dest_dir}/spectral_{name}_files.txt'
+    with open(txt_name, 'w') as f:
+        f.write('\n'.join(files_list))
+    return
+
+
+class CreateLboEig(CreateSpectralDist):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int, num_points: int):
+        super().__init__(h5_files=h5_files, num_nbrs=num_nbrs, num_eigen=num_eigen, num_points=num_points)
+
+    def __getitem__(self, index):
+        """
+        :return: eigenfunctions & eigenvalues associated with the point cloud.
+        """
+        pc, label = self.get_pc(index)
+        pc = pc[0:self.num_points, :]
+        src, target, wt = self.get_knn(pc)
+        src, target, wt = self.connect_graph(pc, src, target, wt)
+        L, D = self.create_laplacian(src, target, wt)
+        eigen_val, eigen_vec = sp.linalg.eigh(a=L, b=D, eigvals=(1, self.num_eigen))
+        print(f'Got index {index}')
+        return eigen_vec, eigen_val
+
+
+def create_lbo_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers):
+    if train:
+        name = 'train'
+    else:
+        name = 'test'
+    bs = 512
+    dest_dir = 'lbo_eig_2048'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    ds = CreateLboEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
+    dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
+
+    files_list = []
+    dl_iter = iter(dl)
+    num_batches = len(dl.batch_sampler)
+    for batch_idx in range(num_batches):
+        print(f'Working on file {batch_idx}', flush=True)
+        eigen_vec, eigen_val = next(dl_iter)
+        print(f'eigen_vec.shape={eigen_vec.shape}')
+        print(f'eigen_val.shape={eigen_val.shape}')
+        file_name = f'data/{dest_dir}/spectral_data_{name}{batch_idx}.h5'
+        files_list.append(file_name)
+        with h5py.File('../' + file_name, 'w') as hf:
+            hf.create_dataset("eigen_vec", data=eigen_vec)
+            hf.create_dataset("eigen_val", data=eigen_val)
+    txt_name = f'../data/{dest_dir}/spectral_{name}_files.txt'
+    with open(txt_name, 'w') as f:
+        f.write('\n'.join(files_list))
+    return
+
+
+class CreateDistEig(CreateSpectralDist):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int, num_points: int):
+        super().__init__(h5_files=h5_files, num_nbrs=num_nbrs, num_eigen=num_eigen, num_points=num_points)
+
+    def __getitem__(self, index):
+        """
+        :return: eigenfunctions & eigenvalues associated with the point cloud.
+        """
+        pc, label = self.get_pc(index)
+        pc = pc[0:self.num_points, :]
+        src, target, wt = self.get_knn(pc)
+        src, target, wt = self.connect_graph(pc, src, target, wt)
+        dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
+        eigen_val, eigen_vec = sp.linalg.eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
+        print(f'Got index {index}')
+        return eigen_vec, eigen_val
+
+
+def create_dist_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers):
+    if train:
+        name = 'train'
+    else:
+        name = 'test'
+    bs = 512
+    dest_dir = 'dist_eig_2048'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    ds = CreateLboEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
+    dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
+
+    files_list = []
+    dl_iter = iter(dl)
+    num_batches = len(dl.batch_sampler)
+    for batch_idx in range(num_batches):
+        print(f'Working on file {batch_idx}', flush=True)
+        eigen_vec, eigen_val = next(dl_iter)
+        print(f'eigen_vec.shape={eigen_vec.shape}')
+        print(f'eigen_val.shape={eigen_val.shape}')
+        file_name = f'data/{dest_dir}/spectral_data_{name}{batch_idx}.h5'
+        files_list.append(file_name)
+        with h5py.File('../' + file_name, 'w') as hf:
+            hf.create_dataset("eigen_vec", data=eigen_vec)
+            hf.create_dataset("eigen_val", data=eigen_val)
+    txt_name = f'../data/{dest_dir}/spectral_{name}_files.txt'
+    with open(txt_name, 'w') as f:
+        f.write('\n'.join(files_list))
+    return
+
+
 if __name__ == '__main__':
-    create_spectral_dataset(train=True, num_eigen=64, num_nbrs=10, num_workers=8)
-    create_spectral_dataset(train=False, num_eigen=64, num_nbrs=10, num_workers=8)
+    #create_spectral_dataset(train=True, num_eigen=64, num_nbrs=10, num_workers=8)
+    #create_spectral_dataset(train=False, num_eigen=64, num_nbrs=10, num_workers=8)
 
-
+    create_dist_eig_dataset(train=True, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
+    create_dist_eig_dataset(train=False, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)

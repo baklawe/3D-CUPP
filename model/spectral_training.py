@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from experiments import get_files_list
-from training import NetTrainer
+from training import NetTrainer, BatchResult
 
 
 class Spectral40Ds(Dataset):
@@ -27,10 +27,9 @@ class Spectral40Ds(Dataset):
 
     def __getitem__(self, index):
         item, label = self.get_numpy_data(index)
-        assert (np.sum(np.isinf(item)) < 1), f'item inf in index {index}'
-        assert (np.sum(np.isnan(item)) < 1), f'item nan in index {index}'
         if self.train:
             item = self.rand_sign(item)
+            item = self.add_noise(item)
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
@@ -53,6 +52,81 @@ class Spectral40Ds(Dataset):
         mat = np.multiply(sign.transpose(), mat)
         mat = np.multiply(mat, sign)
         return mat
+
+    def add_noise(self, mat):
+        noise = np.random.normal(1, 0.002, (self.size, self.size))
+        return mat * noise
+
+
+class Gil40Ds(Dataset):
+    def __init__(self, h5_files: List[str], size: int):
+        super().__init__()
+        self.data_name = 'gil_dist'
+        self.size = size
+        self.tot_examples = 0
+        self.examples = []
+        self.train = 'train' in h5_files[0]
+        for h5_file in h5_files:
+            current_data, current_label = self.load_h5(h5_file)
+            current_data = current_data[:, 0:self.size, 0:self.size]
+            for i in range(current_data.shape[0]):
+                # self.examples.append((np.expand_dims(current_data[i, :], axis=0), current_label[i, :]))
+                self.examples.append((np.diag(current_data[i, :, :]), current_label[i, :]))
+            self.tot_examples += current_data.shape[0]
+
+    def __getitem__(self, index):
+        item, label = self.get_numpy_data(index)
+        item_tensor = torch.from_numpy(item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return item_tensor, label_tensor
+
+    def __len__(self):
+        return self.tot_examples
+
+    def get_numpy_data(self, index):
+        return self.examples[index]
+
+    def load_h5(self, h5_filename):
+        f = h5py.File(h5_filename)
+        data = f[self.data_name][:]
+        label = f['label'][:]
+        return data, label
+
+
+class SpectralWithEig40Ds(Spectral40Ds):
+    def __init__(self, h5_files: List[str], size: int):
+        super().__init__(h5_files=h5_files, size=size)
+        self.examples = []
+        self.tot_examples = 0
+        for h5_file in h5_files:
+            current_data, current_eig, current_label = self.load_h5_eig(h5_file)
+            current_data = current_data[:, 0:self.size, 0:self.size]
+            current_eig = current_eig[:, 0:self.size]
+            for i in range(current_data.shape[0]):
+                self.examples.append((np.expand_dims(current_data[i, :, :], axis=0),
+                                      np.expand_dims(current_eig[i, :], axis=0),
+                                      current_label[i, :]))
+            self.tot_examples += current_data.shape[0]
+
+    def __getitem__(self, index):
+        item, eig, label = self.get_numpy_data(index)
+        if self.train:
+            item = self.rand_sign(item)
+            # item = self.add_noise(item)
+        item_tensor = torch.from_numpy(item).float()
+        eig_tensor = torch.from_numpy(eig).float()
+        label_tensor = torch.from_numpy(label).long()
+        return item_tensor, eig_tensor, label_tensor
+
+    def get_numpy_data(self, index):
+        return self.examples[index]
+
+    def load_h5_eig(self, h5_filename):
+        f = h5py.File(h5_filename)
+        data = f[self.data_name][:]
+        eig = f['eigen_val'][:]
+        label = f['label'][:]
+        return data, eig, label
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -152,6 +226,7 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
+        # self.fc = nn.Linear(512 * block.expansion + 384, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -169,6 +244,19 @@ class ResNet(nn.Module):
                     nn.init.constant_(m.bn3.weight, 0)
                 elif isinstance(m, BasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
+
+        # conv1d layers
+        eig_layers = []  # (B, 1, 32)
+        eig_layers.extend([nn.Conv1d(1, 16, kernel_size=3),  # (B, 16, 30)
+                           nn.ReLU()])
+        eig_layers.extend([nn.Conv1d(16, 32, kernel_size=3),  # (B, 32, 28)
+                           nn.MaxPool1d(kernel_size=2),  # (B, 32, 14)
+                           nn.ReLU()])
+        eig_layers.extend([nn.Conv1d(32, 64, kernel_size=3),  # (B, 64, 12)
+                           nn.MaxPool1d(kernel_size=2),  # (B, 64, 6)
+                           nn.ReLU()])
+        self.eig_seq = nn.Sequential(*eig_layers)
+        return
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -200,7 +288,27 @@ class ResNet(nn.Module):
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
+        return x
 
+    def forward_eig(self, x, eig):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+
+        eig = self.eig_seq(eig).view(eig.shape[0], -1)
+
+        x = torch.cat([x, eig], dim=-1)
+
+        x = self.fc(x)
         return x
 
 
@@ -230,7 +338,7 @@ class SpectralFcNet(nn.Module):
     def __init__(self, c_in: int):
         super().__init__()
         modules = []
-        filters = (c_in, 128, 256, 128)
+        filters = (c_in, 128, 128)
         for i, (c_in, c_out) in enumerate(zip(filters, filters[1:]), start=1):
             modules.extend([nn.Linear(c_in, c_out), nn.ReLU()])
             if i is not 1:
@@ -239,21 +347,14 @@ class SpectralFcNet(nn.Module):
         self.seq = nn.Sequential(*modules)
 
     def forward(self, x):
+        # print(f'x.shape={x.shape}')
         return self.seq(x)
 
 
 class SpectralConv1dNet(nn.Module):
     def __init__(self, c_in: int):
         super().__init__()
-        modules = []
-        filters = (1, 16, 32, 64)
-        # for i, (c_in, c_out) in enumerate(zip(filters, filters[1:]), start=1):
-        #     modules.extend([nn.Conv1d(c_in, c_out, kernel_size=3),
-        #                     # nn.MaxPool1d(kernel_size=2),
-        #                     nn.ReLU()])
-        #     if i is not 1:
-        #         modules.append(nn.BatchNorm1d(c_out))
-
+        modules = []  # (B, 1, 128)
         modules.extend([nn.Conv1d(1, 16, kernel_size=3),  # (B, 16, 30)
                         # nn.MaxPool1d(kernel_size=2),  # (B, 16, 15)
                         nn.ReLU()])
@@ -350,16 +451,47 @@ class SpectralSimpleNet(nn.Module):
         return F.log_softmax(x, dim=-1)
 
 
+class EigTrainer(NetTrainer):
+    def __init__(self, model, loss_fn, optimizer, scheduler, min_lr):
+        super().__init__(model, loss_fn, optimizer, scheduler, min_lr=min_lr)
+
+    def train_batch(self, batch) -> BatchResult:
+        x, eig, y = batch
+        x, eig, y = x.to(self.device), eig.to(self.device), y.view(-1,).to(self.device)
+        self.optimizer.zero_grad()
+        y_pred = self.model(x, eig)
+        loss = self.loss_fn(y_pred, y)
+        loss.backward()
+        self.optimizer.step()
+        num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+        return BatchResult(loss.item(), num_correct.item())
+
+    def test_batch(self, batch) -> BatchResult:
+        with torch.no_grad():
+            x, eig, y = batch
+            x, eig, y = x.to(self.device), eig.to(self.device), y.view(-1, ).to(self.device)
+            y_pred = self.model(x, eig)
+            loss = self.loss_fn(y_pred, y)
+            num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
+            return BatchResult(loss.item(), num_correct.item())
+
+
 def train_spectral_net(matrix_size):
     bs_train, bs_test = 32, 32
-    train_files = get_files_list('../data/heat/spectral_train_files.txt')
-    test_files = get_files_list('../data/heat/spectral_test_files.txt')
+    # train_files = get_files_list('../data/heat/spectral_train_files.txt')
+    # test_files = get_files_list('../data/heat/spectral_test_files.txt')
 
-    ds_train = Spectral40Ds(train_files, size=matrix_size)
-    ds_test = Spectral40Ds(test_files, size=matrix_size)
-    #
-    # ds_train = SpectralDiag(train_files, size=matrix_size)
-    # ds_test = SpectralDiag(test_files, size=matrix_size)
+    train_files = get_files_list('../data/gil/spectral_train_files.txt')
+    test_files = get_files_list('../data/gil/spectral_test_files.txt')
+
+    # ds_train = Spectral40Ds(train_files, size=matrix_size)
+    # ds_test = Spectral40Ds(test_files, size=matrix_size)
+
+    ds_train = Gil40Ds(train_files, size=matrix_size)
+    ds_test = Gil40Ds(test_files, size=matrix_size)
+
+    # ds_train = SpectralWithEig40Ds(train_files, size=matrix_size)
+    # ds_test = SpectralWithEig40Ds(test_files, size=matrix_size)
 
     dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
@@ -367,17 +499,18 @@ def train_spectral_net(matrix_size):
     lr = 1e-3
     min_lr = 2e-5
     l2_reg = 1e-5
-    our_model = ResNet(BasicBlock, [2, 2, 2, 2])
+    # our_model = ResNet(BasicBlock, [2, 2, 2, 2])
     # our_model = SpectralSimpleNet(mat_size=matrix_size)
     # our_model = SpectralSimpleNetBn(mat_size=matrix_size)
-    # our_model = SpectralFcNet(c_in=matrix_size)
+    our_model = SpectralFcNet(c_in=matrix_size)
     # our_model = SpectralConv1dNet(c_in=matrix_size)
     loss_fn = F.cross_entropy
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.7)
     trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
+    # trainer = EigTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
 
-    expr_name = f'Spectral-resnet-10nbrs-lr{lr}'
+    expr_name = f'Spectral-resnet-10nbrs-lr{lr}-noise'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
     _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
@@ -385,4 +518,4 @@ def train_spectral_net(matrix_size):
 
 
 if __name__ == '__main__':
-    train_spectral_net(matrix_size=32)
+    train_spectral_net(matrix_size=128)
