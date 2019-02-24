@@ -1,6 +1,6 @@
 .idea/
 data/
-model/playtime*.
+model/playtime*
 model/*.so
 model/results/
 model/__pycache__/
