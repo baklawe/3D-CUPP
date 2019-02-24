@@ -129,6 +129,74 @@ class SpectralWithEig40Ds(Spectral40Ds):
         return data, eig, label
 
 
+class HybMat40Ds(Dataset):
+    def __init__(self, lbo_files: List[str], dist_files: List[str], pc_files: List[str], size: int):
+        super().__init__()
+        self.data_name = 'eigen_vec'
+        self.size = size
+        lbo_examples = []
+        dist_examples = []
+        self.mat_examples = []
+        self.label_examples = []
+        self.train = 'train' in lbo_files[0]
+        for h5_file in lbo_files:
+            current_data = self.load_h5(h5_file, self.data_name)
+            current_data = current_data[:, :, 0:self.size]
+            for i in range(current_data.shape[0]):
+                lbo_examples.append(current_data[i, :, :])
+        for h5_file in dist_files:
+            current_data = self.load_h5(h5_file, self.data_name)
+            current_data = current_data[:, :, 1:self.size+1]
+            for i in range(current_data.shape[0]):
+                dist_examples.append(current_data[i, :, :])
+        assert (len(lbo_examples) == len(dist_examples))
+        for lbo_eig, dist_eig in zip(lbo_examples, dist_examples):
+            self.mat_examples.append(np.expand_dims(lbo_eig.transpose() @ dist_eig, axis=0))
+        del lbo_examples
+        del dist_examples
+
+        for h5_file in pc_files:
+            current_data = self.load_h5(h5_file, 'label')
+            for i in range(current_data.shape[0]):
+                self.label_examples.append(np.expand_dims(current_data[i, :], axis=0))
+        assert (len(self.mat_examples) == len(self.label_examples))
+
+    def __getitem__(self, index):
+        item, label = self.get_numpy_data(index)
+        if self.train:
+            item = self.rand_sign(item)
+            # item = self.add_noise(item)
+        item_tensor = torch.from_numpy(item).float()
+        label_tensor = torch.from_numpy(label).long()
+        return item_tensor, label_tensor
+
+    def __len__(self):
+        return len(self.mat_examples)
+
+    def get_numpy_data(self, index):
+        mat = self.mat_examples[index]
+        label = self.label_examples[index]
+        return mat, label
+
+    def load_h5(self, h5_filename, data_name):
+        f = h5py.File(h5_filename)
+        data = f[data_name][:]
+        return data
+
+    def rand_sign(self, mat):
+        sign1 = np.random.choice([-1, 1], size=self.size)
+        sign2 = np.random.choice([-1, 1], size=self.size)
+        sign1 = np.reshape(sign1, (self.size, 1))
+        sign2 = np.reshape(sign2, (self.size, 1))
+        mat = np.multiply(sign1.transpose(), mat)
+        mat = np.multiply(mat, sign2)
+        return mat
+
+    def add_noise(self, mat):
+        noise = np.random.normal(1, 0.0001, (self.size, self.size))
+        return mat * noise
+
+
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
@@ -478,17 +546,20 @@ class EigTrainer(NetTrainer):
 
 def train_spectral_net(matrix_size):
     bs_train, bs_test = 32, 32
-    # train_files = get_files_list('../data/heat/spectral_train_files.txt')
-    # test_files = get_files_list('../data/heat/spectral_test_files.txt')
+    train_files_pc = get_files_list(f'../data/modelnet40_ply_hdf5_2048/train_files.txt')
+    test_files_pc = get_files_list(f'../data/modelnet40_ply_hdf5_2048/test_files.txt')
 
-    train_files = get_files_list('../data/gil/spectral_train_files.txt')
-    test_files = get_files_list('../data/gil/spectral_test_files.txt')
+    train_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_train_files.txt')
+    test_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_test_files.txt')
+
+    train_files_dist = get_files_list('../data/dist_eig_2048/spectral_train_files.txt')
+    test_files_dist = get_files_list('../data/dist_eig_2048/spectral_test_files.txt')
 
     # ds_train = Spectral40Ds(train_files, size=matrix_size)
     # ds_test = Spectral40Ds(test_files, size=matrix_size)
 
-    ds_train = Gil40Ds(train_files, size=matrix_size)
-    ds_test = Gil40Ds(test_files, size=matrix_size)
+    ds_train = HybMat40Ds(lbo_files=train_files_lbo, dist_files=train_files_dist, pc_files=train_files_pc, size=matrix_size)
+    ds_test = HybMat40Ds(lbo_files=test_files_lbo, dist_files=test_files_dist, pc_files=test_files_pc, size=matrix_size)
 
     # ds_train = SpectralWithEig40Ds(train_files, size=matrix_size)
     # ds_test = SpectralWithEig40Ds(test_files, size=matrix_size)
@@ -496,21 +567,21 @@ def train_spectral_net(matrix_size):
     dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    lr = 1e-3
-    min_lr = 2e-5
-    l2_reg = 1e-5
-    # our_model = ResNet(BasicBlock, [2, 2, 2, 2])
+    lr = 1e-6
+    min_lr = 5e-6
+    l2_reg = 0
+    our_model = ResNet(BasicBlock, [2, 2, 2, 2])
     # our_model = SpectralSimpleNet(mat_size=matrix_size)
     # our_model = SpectralSimpleNetBn(mat_size=matrix_size)
-    our_model = SpectralFcNet(c_in=matrix_size)
+    # our_model = SpectralFcNet(c_in=matrix_size)
     # our_model = SpectralConv1dNet(c_in=matrix_size)
     loss_fn = F.cross_entropy
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.7)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
     trainer = NetTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
     # trainer = EigTrainer(our_model, loss_fn, optimizer, scheduler, min_lr=min_lr)
 
-    expr_name = f'Spectral-resnet-10nbrs-lr{lr}-noise'
+    expr_name = f'Spectral-resnet-brs-lr{lr}-noise'
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
     _ = trainer.fit(dl_train, dl_test, num_epochs=10000, early_stopping=50, checkpoints=expr_name)
@@ -518,4 +589,4 @@ def train_spectral_net(matrix_size):
 
 
 if __name__ == '__main__':
-    train_spectral_net(matrix_size=128)
+    train_spectral_net(matrix_size=32)

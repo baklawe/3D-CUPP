@@ -10,7 +10,7 @@ import distance_mat
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial.distance import cdist
 from scipy.linalg import eigh
-import inspect
+import matplotlib.pyplot as plt
 
 
 class CreateSpectralDist(ModelNet40Base):
@@ -91,8 +91,7 @@ class CreateSpectralDist(ModelNet40Base):
         return L, D
 
     def get_spectral_dist(self, L, D, dist_mat):
-        # The first eigen vector is constant and corresponds with eigen value 0
-        eigen_val, eigen_vec = eigh(a=L, b=D, eigvals=(1, self.num_eigen))
+        eigen_val, eigen_vec = sp.linalg.eigh(a=L, b=D, eigvals=(1, self.num_eigen))
         spectral_dist = eigen_vec.transpose() @ dist_mat @ eigen_vec
         return spectral_dist, eigen_val
 
@@ -197,7 +196,7 @@ class CreateLboEig(CreateSpectralDist):
         src, target, wt = self.get_knn(pc)
         src, target, wt = self.connect_graph(pc, src, target, wt)
         L, D = self.create_laplacian(src, target, wt)
-        eigen_val, eigen_vec = eigh(a=L, b=D, eigvals=(1, self.num_eigen))
+        eigen_val, eigen_vec = sp.linalg.eigh(a=L, b=D, eigvals=(1, self.num_eigen))
         print(f'Got index {index}')
         return eigen_vec, eigen_val
 
@@ -207,7 +206,7 @@ def create_lbo_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers):
         name = 'train'
     else:
         name = 'test'
-    bs = 256
+    bs = 512
     dest_dir = 'lbo_eig_2048'
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
     ds = CreateLboEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
@@ -245,7 +244,7 @@ class CreateDistEig(CreateSpectralDist):
         src, target, wt = self.get_knn(pc)
         src, target, wt = self.connect_graph(pc, src, target, wt)
         dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
-        eigen_val, eigen_vec = eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
+        eigen_val, eigen_vec = sp.linalg.eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
         print(f'Got index {index}')
         return eigen_vec, eigen_val
 
@@ -258,13 +257,12 @@ def create_dist_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers)
     bs = 512
     dest_dir = 'dist_eig_2048'
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    ds = CreateDistEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
+    ds = CreateLboEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
     dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
 
     files_list = []
     dl_iter = iter(dl)
     num_batches = len(dl.batch_sampler)
-    print(f'function name={inspect.stack()[0][3]}, dest_dir={dest_dir}, num files={num_batches}')
     for batch_idx in range(num_batches):
         print(f'Working on file {batch_idx}', flush=True)
         eigen_vec, eigen_val = next(dl_iter)
@@ -282,5 +280,49 @@ def create_dist_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers)
 
 
 if __name__ == '__main__':
-    create_dist_eig_dataset(train=True, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
-    create_dist_eig_dataset(train=False, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
+
+    name = 'train'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    num_nbrs = 5
+    num_eigen = 32
+    num_points = 2048
+    ds = CreateSpectralDist(h5_files=pc_files, num_nbrs=num_nbrs, num_eigen=num_eigen, num_points=num_points)
+    for index in range(5):
+        pc, label = ds.get_pc(index)
+        pc = pc[0:num_points, :]
+        src, target, wt = ds.get_knn(pc)
+        src, target, wt = ds.connect_graph(pc, src, target, wt)
+        L, D = ds.create_laplacian(src, target, wt)
+        dist_mat = distance_mat.get_distance_m(num_points, src, target, wt)
+        eigen_val_lbo, eigen_vec_lbo = eigh(a=L, b=D, eigvals=(1, num_eigen))
+        eigen_val_dist, eigen_vec_dist = eigh(a=dist_mat, eigvals=(0, num_eigen+1))
+        mat = eigen_vec_lbo.transpose() @ eigen_vec_dist
+        plt.figure()
+        plt.imshow(abs(mat), extent=[0, 1, 0, 1])
+        # plt.imshow(mat)
+        # plt.imshow(np.abs(mat1)-np.abs(mat2), extent=[0, 1, 0, 1])
+        plt.colorbar()
+        plt.title(f'label={label.item(0)}, num_nbrs={num_nbrs}')
+
+    num_nbrs = 10
+    num_eigen = 32
+    num_points = 2048
+    ds = CreateSpectralDist(h5_files=pc_files, num_nbrs=num_nbrs, num_eigen=num_eigen, num_points=num_points)
+    for index in range(5):
+        pc, label = ds.get_pc(index)
+        pc = pc[0:num_points, :]
+        src, target, wt = ds.get_knn(pc)
+        src, target, wt = ds.connect_graph(pc, src, target, wt)
+        L, D = ds.create_laplacian(src, target, wt)
+        dist_mat = distance_mat.get_distance_m(num_points, src, target, wt)
+        eigen_val_lbo, eigen_vec_lbo = eigh(a=L, b=D, eigvals=(1, num_eigen))
+        eigen_val_dist, eigen_vec_dist = eigh(a=dist_mat, eigvals=(0, num_eigen + 1))
+        mat = eigen_vec_lbo.transpose() @ eigen_vec_dist
+        plt.figure()
+        plt.imshow(abs(mat), extent=[0, 1, 0, 1])
+        # plt.imshow(mat)
+        # plt.imshow(np.abs(mat1)-np.abs(mat2), extent=[0, 1, 0, 1])
+        plt.colorbar()
+        plt.title(f'label={label.item(0)}, num_nbrs={num_nbrs}')
+    plt.show()
+
