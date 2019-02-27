@@ -79,7 +79,9 @@ def get_knn(pc, num_nbrs):
 #         lambdas, _ = eigh(w)
 #         gauss_c[i] = max([min([lambdas[0] * lambdas[1], 20]), -20])
 #     return gauss_c
-
+'''
+https://stackoverflow.com/questions/9605556/how-to-project-a-point-onto-a-plane-in-3d
+'''
 def get_curvature(pc, normals, num_nbrs):
     num_points = pc.shape[0]
     gauss_c = np.empty(num_points)
@@ -102,15 +104,18 @@ def get_curvature(pc, normals, num_nbrs):
         ny = nbrs_normals[:, 1]
         nxy = (xi * nx + yi * ny)/np.sqrt(xi ** 2 + yi ** 2)
         kni = -nxy/(np.sqrt(nxy ** 2 + nz ** 2)*np.sqrt(xi ** 2 + yi ** 2))
-        nbrs_coor = nbrs_coor
-        nbrs_proj = proj_m @ nbrs_coor.transpose() - pc[i, :]  # (3, num_nbrs)
-        assert (norm(nbrs_proj, axis=1, keepdims=True) > 1e-5).sum() < 1, f'norm:\n' \
+        nbrs_coor = nbrs_coor - pc[i, :]
+        nbrs_dist = p_n.reshape(1, 3) @ nbrs_coor.transpose()
+        nbrs_proj = nbrs_coor - nbrs_dist.transpose() * np.tile(p_n.reshape(1, 3), (num_nbrs, 1))
+        # nbrs_proj = proj_m @ nbrs_coor.transpose() # (3, num_nbrs)
+        assert (norm(nbrs_proj, axis=1, keepdims=True) < 1e-5).sum() < 1, f'norm:\n' \
                                                                           f'{norm(nbrs_proj, axis=1, keepdims=True)}\n ' \
                                                                           f'nbrscoor:\n{nbrs_coor}\n'\
                                                                           f'nbrsproj:\n{nbrs_proj.shape}'
         nbrs_proj = nbrs_proj / norm(nbrs_proj, axis=1, keepdims=True)
-        cos_theta = (u1 @ nbrs_proj).reshape(-1,)
-        # print(cos_theta)
+        cos_theta = (u1.reshape(1, 3) @ nbrs_proj.transpose()).reshape(-1,)
+        cos_theta[np.logical_and(cos_theta > 1.0, cos_theta < 1.005)] = 1
+        cos_theta[np.logical_and(cos_theta < -1.0, cos_theta > -1.005)] = -1
         sin_theta = np.sqrt(1-cos_theta ** 2)
         m_matrix = np.column_stack([cos_theta ** 2,
                                     2 * cos_theta * sin_theta,
@@ -151,7 +156,7 @@ def plot_normals(pc, normals):
     x, y, z = pc[:, 0], pc[:, 1], pc[:, 2]
     u, v, w = normals[:, 0], normals[:, 1], normals[:, 2]
 
-    ax.quiver(x, y, z, u, v, w, length=0.1)
+    ax.quiver(x, y, z, u, v, w, length=0.05)
 
     plt.show()
 
@@ -168,7 +173,7 @@ def calc_normals(pc, num_nbrs):
 pc_file = '../data/modelnet40_ply_hdf5_2048/ply_data_train0.h5'
 data, label = load_h5(pc_file)
 normal_file = '../data/normals_5nbr_2048/normals_data_train0.h5'
-index = 3
+index = 29
 num_nbrs = 10
 pc = data[index, :, :]
 # pc = fibonacci_sphere()
@@ -176,9 +181,9 @@ pc_normals = calc_normals(pc, num_nbrs)
 # pc_normals = pc
 gauss_c = get_curvature(pc, pc_normals, num_nbrs)
 # print(np.min(gauss_c))
-plot_pc(pc, gauss_c, f'{label.item(0)}')
+# plot_pc(pc, gauss_c, f'{label.item(index)}')
 
-# plot_normals(pc, pc_normals)
+plot_normals(pc, pc_normals)
 
 
 
