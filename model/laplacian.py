@@ -20,7 +20,7 @@ from sklearn.neighbors import NearestNeighbors
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, parentdir)
-# from utils.normals_Hough.python.lib.python import NormalEstimatorHough as NormalEstimator
+from utils.normals_Hough.python.lib.python import NormalEstimatorHough as NormalEstimator
 
 
 class ModelNet40Base(Dataset):
@@ -126,10 +126,11 @@ def create_eigen_dataset(train=True, num_eigen=100, num_nbrs=5):
 
 
 class CreateNormals40Ds(ModelNet40Base):
-    def __init__(self, h5_files: List[str]):
+    def __init__(self, h5_files: List[str], num_nbrs: int, num_points: int):
         super().__init__(h5_files)
         self.estimator = NormalEstimator.NormalEstimatorHough()
-        self.estimator.set_K(5)
+        self.estimator.set_K(num_nbrs)
+        self.num_points = num_points
 
     def __getitem__(self, index):
         """
@@ -137,7 +138,9 @@ class CreateNormals40Ds(ModelNet40Base):
         :return: Normals (N, 3)
         """
         pc, _ = self.get_pc(index)
+        pc = pc[0:self.num_points, :]
         normals = self.calc_normals(pc)
+        print(f'Got index: {index}')
         return normals
 
     def calc_normals(self, pc):
@@ -147,24 +150,32 @@ class CreateNormals40Ds(ModelNet40Base):
         return np.float32(self.estimator.get_normals())
 
 
-def create_normals_dataset(train=True):
+def create_normals_dataset(train: bool, num_nbrs: int, num_points: int, num_workers: int):
     if train:
         name = 'train'
     else:
         name = 'test'
-    bs = 2048
-    files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    ds = CreateNormals40Ds(files)
-    dl = DataLoader(ds, bs, shuffle=False, num_workers=20)
+    bs = 512
+    dest_dir = 'normals_5nbr_2048'
+    pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
+    ds = CreateNormals40Ds(h5_files=pc_files, num_nbrs=num_nbrs, num_points=num_points)
+    dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
 
+    files_list = []
     dl_iter = iter(dl)
     num_batches = len(dl.batch_sampler)
+    print(f'function name={inspect.stack()[0][3]}, dest_dir={dest_dir}, num files={num_batches}')
     for batch_idx in range(num_batches):
-        print(f'Working on file {batch_idx}')
-        normal = next(dl_iter)
-        print(f'normals.shape={normal.shape}')
-        with h5py.File(f'../data/eigen/normal_data_{name}{batch_idx}.h5', 'w') as hf:
-            hf.create_dataset("normal",  data=normal)
+        print(f'Working on file {batch_idx}', flush=True)
+        normals = next(dl_iter)
+        print(f'normals.shape={normals.shape}')
+        file_name = f'data/{dest_dir}/normals_data_{name}{batch_idx}.h5'
+        files_list.append(file_name)
+        with h5py.File('../' + file_name, 'w') as hf:
+            hf.create_dataset("normals", data=normals)
+    txt_name = f'../data/{dest_dir}/normals_{name}_files.txt'
+    with open(txt_name, 'w') as f:
+        f.write('\n'.join(files_list))
     return
 
 
@@ -315,37 +326,8 @@ class SpectralPointNet(nn.Module):
 
 
 if __name__ == '__main__':
-    train_shape_net(c_in=30, evec=False)
-    # target = 'train'
-    # files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{target}_files.txt')
-    # ds = CreateLBOeigen(h5_files=files, num_nbrs=5, num_eigen=150)
-    # ind = 5
-    # pc = ds.get_pc(ind)
-    # e_val, e_vec = ds.calc_eigs(*ds.create_laplacian(pc))
-    # for i in range(10):
-    #     plot_pc(pc, e_vec[:, i], title=f'V{i}')
-    # plt.show()
-    # train_shape_net(c_in=30, evec=False)
-    # create_eigen_dataset(train=True, num_eigen=100, num_nbrs=5)
-    # create_eigen_dataset(train=False, num_eigen=100, num_nbrs=5)
-    # create_normals_dataset(train=True)
-    # create_normals_dataset(train=False)
-
-    # target = 'train'
-    # bs = 2048
-    # files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{target}_files.txt')
-    # t = 100
-    # ds = CreateShapeNet40Ds(files, num_evals=100, num_nbrs=5, t=t)
-    # ind = 5
-    # pc, label = ds.get_np_pc(ind)
-    # # print(pc.shape)
-    # print(ds.calc_normals(np.float64(pc.transpose())).dtype)
-    # e_val, e_vec = ds.calc_eigs(*ds.create_laplacian(pc.transpose()))
-    # print(e_val)
-    # for i in range(10):
-    #     plot_pc(pc.transpose(), e_vec[:, i], title=f'V{i}, t={t}')
-    # plt.show()
-
+    create_normals_dataset(train=True, num_nbrs=5, num_points=2048, num_workers=8)
+    create_normals_dataset(train=False, num_nbrs=5, num_points=2048, num_workers=8)
 
 
 
