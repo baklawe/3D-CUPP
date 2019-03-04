@@ -221,7 +221,6 @@ class SfmModel(nn.Module):
         """
         : x: (B, 3, N)
         : lbo: (B, N, 64)
-        :
         """
         # lam = torch.exp(-lam)
         # lam = lam.view(lam.shape[0], 1, lam.shape[1])
