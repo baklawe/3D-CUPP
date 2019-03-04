@@ -208,7 +208,7 @@ def create_lbo_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers):
     else:
         name = 'test'
     bs = 256
-    dest_dir = 'lbo_eig_2048'
+    dest_dir = 'lbo_eig_1024'
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
     ds = CreateLboEig(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=num_points)
     dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
@@ -282,5 +282,7 @@ def create_dist_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers)
 
 
 if __name__ == '__main__':
-    create_dist_eig_dataset(train=True, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
-    create_dist_eig_dataset(train=False, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
+    create_lbo_eig_dataset(train=True, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
+    create_lbo_eig_dataset(train=False, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
+    #create_dist_eig_dataset(train=True, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
+    #create_dist_eig_dataset(train=False, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)

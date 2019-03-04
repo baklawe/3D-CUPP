@@ -293,14 +293,15 @@ class NetTrainer:
 
     def plot_error(self, fit_res: FitResult):
         epochs = [*range(1, len(fit_res.train_acc)+1)]
-        plt.rcParams.update({'font.size': 20})
+        plt.rcParams.update({'font.size': 18})
         fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(16, 10), sharex='col')
         best_loss = min(fit_res.test_loss)
-        best_acc = max(fit_res.test_acc)
+        best_acc_train = max(fit_res.train_acc)
+        best_acc_test = max(fit_res.test_acc)
 
         ax = axes[0]
         ewb = len(fit_res.test_acc) - (np.argmax(fit_res.test_acc) + 1)
-        ax.set_title(f'{self.exp_name.capitalize()}, Best Loss: {best_loss:.1e}, Best Acc: {best_acc:.1f}, ewb: {ewb}')
+        ax.set_title(f'{self.exp_name.capitalize()}, Best Train: {best_acc_train:.1f}, Best Test: {best_acc_test:.1f}, ewb: {ewb}')
         ax.plot(epochs, fit_res.train_loss, color='b')
         ax.plot(epochs, fit_res.test_loss, color='r')
         ax.set_ylabel('Loss')

@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from experiments import get_files_list
 from training import NetTrainer, BatchResult
+from random import randint
 
 
 class Spectral40Ds(Dataset):
@@ -132,40 +133,59 @@ class SpectralWithEig40Ds(Spectral40Ds):
 class HybMat40Ds(Dataset):
     def __init__(self, lbo_files: List[str], dist_files: List[str], pc_files: List[str], size: int):
         super().__init__()
-        self.data_name = 'eigen_vec'
         self.size = size
-        lbo_examples = []
-        dist_examples = []
+        lbo_vecs = []
+        lbo_vals = []
+        dist_vecs = []
+        dist_vals = []
         self.mat_examples = []
         self.label_examples = []
         self.train = 'train' in lbo_files[0]
         for h5_file in lbo_files:
-            current_data = self.load_h5(h5_file, self.data_name)
-            current_data = current_data[:, :, 0:self.size]
-            for i in range(current_data.shape[0]):
-                lbo_examples.append(current_data[i, :, :])
+            eig_vecs = self.load_h5(h5_file, 'eigen_vec')
+            eig_vals = self.load_h5(h5_file, 'eigen_val')
+            eig_vecs = eig_vecs[:, :, 0:self.size]
+            eig_vals = eig_vals[:, 0:self.size]
+            for i in range(eig_vecs.shape[0]):
+                lbo_vecs.append(eig_vecs[i, :, :])
+                lbo_vals.append(eig_vals[i, :])
         for h5_file in dist_files:
-            current_data = self.load_h5(h5_file, self.data_name)
-            current_data = current_data[:, :, 1:self.size+1]
-            for i in range(current_data.shape[0]):
-                dist_examples.append(current_data[i, :, :])
-        assert (len(lbo_examples) == len(dist_examples))
-        for lbo_eig, dist_eig in zip(lbo_examples, dist_examples):
-            self.mat_examples.append(np.expand_dims(lbo_eig.transpose() @ dist_eig, axis=0))
-        del lbo_examples
-        del dist_examples
+            eig_vecs = self.load_h5(h5_file, 'eigen_vec')
+            eig_vals = self.load_h5(h5_file, 'eigen_val')
+            eig_vecs = eig_vecs[:, :, 0:self.size]
+            eig_vals = eig_vals[:, 0:self.size]
+            for i in range(eig_vecs.shape[0]):
+                dist_vecs.append(eig_vecs[i, :, :])
+                dist_vals.append(eig_vals[i, :])
+        assert (len(lbo_vecs) == len(dist_vecs))
+        for lbo_vec, dist_vec, lbo_val, dist_val in zip(lbo_vecs, dist_vecs, lbo_vals, dist_vals):
+            # mat = (lbo_vec.transpose() @ dist_vec) @ np.diag(dist_val) @ (dist_vec.transpose() @ lbo_vec)
+            #lhs = np.diag(np.exp(-lbo_val)) @ lbo_vec.transpose() @ dist_vec
+            #mat = lhs @ np.diag(dist_val) @ lhs.transpose()
+            #mat = np.diag(np.exp(-lbo_val)) @ lbo_vec.transpose() @ dist_vec @ np.diag(dist_val)
+            mat = lbo_vec.transpose() @ dist_vec @ np.diag(dist_val)
+            assert (mat.shape == (self.size, self.size)), f'mat.shape={mat.shape}'
+            self.mat_examples.append(mat)
+        del lbo_vecs
+        del dist_vecs
+        del lbo_vals
+        del dist_vals
 
         for h5_file in pc_files:
             current_data = self.load_h5(h5_file, 'label')
             for i in range(current_data.shape[0]):
-                self.label_examples.append(np.expand_dims(current_data[i, :], axis=0))
+                self.label_examples.append(current_data[i, :])
         assert (len(self.mat_examples) == len(self.label_examples))
 
     def __getitem__(self, index):
         item, label = self.get_numpy_data(index)
         if self.train:
             item = self.rand_sign(item)
+            #if randint(1, 100) < 4:
+                #label = np.mod(label + 1, 40)
+                #label = np.array([randint(0, 39)])
             # item = self.add_noise(item)
+        item, label = np.expand_dims(item, axis=0), np.expand_dims(label, axis=0)
         item_tensor = torch.from_numpy(item).float()
         label_tensor = torch.from_numpy(label).long()
         return item_tensor, label_tensor
@@ -186,10 +206,12 @@ class HybMat40Ds(Dataset):
     def rand_sign(self, mat):
         sign1 = np.random.choice([-1, 1], size=self.size)
         sign2 = np.random.choice([-1, 1], size=self.size)
-        sign1 = np.reshape(sign1, (self.size, 1))
-        sign2 = np.reshape(sign2, (self.size, 1))
-        mat = np.multiply(sign1.transpose(), mat)
-        mat = np.multiply(mat, sign2)
+        mat = np.diag(sign1) @ mat @ np.diag(sign2)
+        return mat
+
+    def rand_sign_1(self, mat):
+        sign1 = np.random.choice([-1, 1], size=self.size)
+        mat = np.diag(sign1) @ mat @ np.diag(sign1).transpose()
         return mat
 
     def add_noise(self, mat):
@@ -567,7 +589,7 @@ def train_spectral_net(matrix_size):
     dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
     dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    lr = 1e-6
+    lr = 1e-4
     min_lr = 5e-6
     l2_reg = 0
     our_model = ResNet(BasicBlock, [2, 2, 2, 2])
@@ -589,4 +611,4 @@ def train_spectral_net(matrix_size):
 
 
 if __name__ == '__main__':
-    train_spectral_net(matrix_size=32)
+    train_spectral_net(matrix_size=64)
