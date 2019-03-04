@@ -11,6 +11,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial.distance import cdist
 from scipy.linalg import eigh
 import inspect
+from torch.utils.data import Dataset
 
 
 class CreateSpectralDist(ModelNet40Base):
@@ -129,38 +130,88 @@ def create_spectral_dataset(train, num_eigen, num_nbrs, num_workers):
     return
 
 
-class CreateGilDist(CreateSpectralDist):
-    def __init__(self, h5_files: List[str], num_nbrs: int, num_eigen: int):
-        super().__init__(h5_files=h5_files, num_nbrs=num_nbrs, num_eigen=num_eigen)
+class CreateGDD(Dataset):
+    def __init__(self, pc_files: List[str], num_points: int, num_nbrs: int, num_eigen: int):
+        """
+        :param pc_files:
+        :param num_points:
+        :param num_nbrs: includes the point itself.
+        """
+        super().__init__()
+        self.num_points = num_points
+        self.num_nbrs = num_nbrs
+        self.num_eigen = num_eigen
+        self.train = 'train' in pc_files[0]
+        self.examples = []
+        for h5_file in pc_files:
+            # labels = self.load_h5(h5_file, 'label')
+            data = self.load_h5(h5_file, 'data')
+            for i in range(data.shape[0]):
+                # label = labels[i, :]
+                pc = data[i, 0:self.num_points, :]  # (num_points, 3)
+                self.examples.append(pc)
+
+    def __len__(self):
+        return len(self.examples)
+
+    @staticmethod
+    def load_h5(h5_filename, data_name):
+        f = h5py.File(h5_filename)
+        data = f[data_name][:]
+        return data
+
+    def get_knn(self, pc):
+        # +1 including the point itself
+        nbrs = NearestNeighbors(n_neighbors=self.num_nbrs + 1, algorithm='auto', metric='euclidean').fit(pc)
+        distances, indices = nbrs.kneighbors(pc)  # (N, num_nbrs + 1)
+        src = np.tile(indices[:, 0], reps=self.num_nbrs)  # (N * num_nbrs,)
+        target = indices[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
+        wt = distances[:, 1:].transpose().reshape(-1, )  # (N * num_nbrs,)
+        return src, target, wt
+
+    def connect_graph(self, pc, src, target, wt):
+        W = np.zeros((self.num_points, self.num_points))
+        W[src, target] = 1
+        n_components, labels = connected_components(csgraph=W, directed=False, return_labels=True)
+        while n_components is not 1:
+            part1 = pc[labels == 0, :]
+            part2 = pc[labels != 0, :]
+            y = cdist(part1, part2, 'euclidean')
+            y_flat = y.ravel()
+            idx = np.argsort(y_flat)[0:5:1]
+            new_wt = y_flat[idx]
+            idx = np.column_stack(np.unravel_index(idx, y.shape))
+            new_src = np.argwhere(labels == 0)[idx[:, 0]]
+            new_trg = np.argwhere(labels != 0)[idx[:, 1]]
+            W[new_src, new_trg] = 1
+            src = np.concatenate((src.reshape(-1, ), new_src.reshape(-1, )), axis=0)
+            target = np.concatenate((target.reshape(-1, ), new_trg.reshape(-1, )), axis=0)
+            wt = np.concatenate((wt.reshape(-1, ), new_wt.reshape(-1, )), axis=0)
+            n_components, labels = connected_components(csgraph=W, directed=False, return_labels=True)
+        return src, target, wt
 
     def __getitem__(self, index):
         """
         :return: eigenfunctions & eigenvalues associated with the point cloud.
         """
-        pc, label = self.get_pc(index)
-        pc = pc[0:self.num_points, :]
+        pc = self.examples[index]
         src, target, wt = self.get_knn(pc)
         src, target, wt = self.connect_graph(pc, src, target, wt)
         dist_mat = distance_mat.get_distance_m(self.num_points, src, target, wt)
-        spectral_dist, eigen_val = self.get_gil_dist(dist_mat)
+        eigen_val, eigen_vec = eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
         print(f'Got index {index}')
-        return spectral_dist, eigen_val, label
-
-    def get_gil_dist(self, dist_mat):
-        eigen_val, eigen_vec = sp.linalg.eigh(a=dist_mat, eigvals=(0, self.num_eigen-1))
-        gil_dist = np.diag(eigen_vec.transpose() @ dist_mat @ eigen_vec)
-        return gil_dist, eigen_val
+        return eigen_val, eigen_vec
 
 
-def create_gil_dataset(train, num_eigen, num_nbrs, num_workers):
+def create_gdd_dataset(train, num_eigen, num_nbrs, num_workers):
     if train:
         name = 'train'
     else:
         name = 'test'
     bs = 512
-    dest_dir = 'gil'
+    dest_dir = 'gdd_1024'
     pc_files = get_files_list(f'../data/modelnet40_ply_hdf5_2048/{name}_files.txt')
-    ds = CreateGilDist(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs)
+    ds = CreateGDD(pc_files, num_eigen=num_eigen, num_nbrs=num_nbrs, num_points=1024)
     dl = DataLoader(ds, bs, shuffle=False, num_workers=num_workers)
 
     files_list = []
@@ -168,17 +219,15 @@ def create_gil_dataset(train, num_eigen, num_nbrs, num_workers):
     num_batches = len(dl.batch_sampler)
     for batch_idx in range(num_batches):
         print(f'Working on file {batch_idx}', flush=True)
-        gil_dist, eigen_val, label = next(dl_iter)
-        print(f'gil_dist.shape={gil_dist.shape}')
+        eigen_val, eigen_vec = next(dl_iter)
         print(f'eigen_val.shape={eigen_val.shape}')
-        print(f'label.shape={label.shape}')
-        file_name = f'data/{dest_dir}/spectral_data_{name}{batch_idx}.h5'
+        print(f'eigen_vec.shape={eigen_vec.shape}')
+        file_name = f'data/{dest_dir}/gdd_{name}{batch_idx}.h5'
         files_list.append(file_name)
         with h5py.File('../' + file_name, 'w') as hf:
-            hf.create_dataset("gil_dist", data=gil_dist)
+            hf.create_dataset("eigen_vec", data=eigen_vec)
             hf.create_dataset("eigen_val", data=eigen_val)
-            hf.create_dataset("label", data=label)
-    txt_name = f'../data/{dest_dir}/spectral_{name}_files.txt'
+    txt_name = f'../data/{dest_dir}/gdd_{name}_files.txt'
     with open(txt_name, 'w') as f:
         f.write('\n'.join(files_list))
     return
@@ -282,7 +331,9 @@ def create_dist_eig_dataset(train, num_eigen, num_nbrs, num_points, num_workers)
 
 
 if __name__ == '__main__':
-    create_lbo_eig_dataset(train=True, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
-    create_lbo_eig_dataset(train=False, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
+    create_gdd_dataset(train=True, num_eigen=64, num_nbrs=5, num_workers=8)
+    create_gdd_dataset(train=False, num_eigen=64, num_nbrs=5, num_workers=8)
+    # create_lbo_eig_dataset(train=True, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
+    # create_lbo_eig_dataset(train=False, num_eigen=128, num_nbrs=5, num_points=1024, num_workers=8)
     #create_dist_eig_dataset(train=True, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
     #create_dist_eig_dataset(train=False, num_eigen=64, num_nbrs=10, num_points=2048, num_workers=8)
