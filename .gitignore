@@ -6,3 +6,4 @@ model/results/
 model/__pycache__/
 utils/
 CppFiles/
+create_curvature_old.py

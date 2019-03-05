@@ -31,7 +31,7 @@ we also have boxes:
   - [ ] Combine features in different stages.
   - [ ] Train the networks separately first (keep features weights) and then join them.
 
-Current SOTA = 90.5 
+Current SOTA = 91.5
 
 - [ ] we also need to order some good pizza.\
 Zanzara : http://www.2eat.co.il/zanzara/menu.aspx?pid=6113\

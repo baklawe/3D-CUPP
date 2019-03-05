@@ -389,6 +389,8 @@ class SfmModel(nn.Module):
 class SfmNetTrainer(NetTrainer):
     def __init__(self, model, loss_fn, optimizer, scheduler, min_lr):
         super().__init__(model, loss_fn, optimizer, scheduler, min_lr=min_lr)
+        self.error_mat = np.zeros([40 * 40])
+
 
     def train_batch(self, batch) -> BatchResult:
         # x, lbo, y = batch
@@ -418,8 +420,21 @@ class SfmNetTrainer(NetTrainer):
             # y_pred = self.model(x, ind, dist, lbo)
             y_pred = self.model(x, lbo, gdd)
             loss = self.loss_fn(y_pred, y)
+            pred = torch.argmax(y_pred, dim=-1).view(-1,)
+            y_idx = y != pred
+            idx = y[y_idx] * 40 + pred[y_idx]
+            self.error_mat += np.bincount(idx, minlength=40)
+
             num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
             return BatchResult(loss.item(), num_correct.item())
+
+    def test_epoch(self, dl_test: DataLoader):
+        self.model.train(False)
+        self.error_mat = np.zeros([40 * 40])
+        res = self._foreach_batch(dl_test, self.test_batch)
+        plt.imshow(self.error_mat.reshape(40, 40))
+        plt.show()
+        return res
 
 
 def train_net(expr_name: str, num_eigen: int, num_nbrs: int):
