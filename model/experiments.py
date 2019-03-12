@@ -12,35 +12,36 @@ def get_files_list(list_filename):
     return ['../' + line.rstrip() for line in open(list_filename)]
 
 
-def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=300, lr=1e-3, l2_reg=0):
+def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epochs=300, lr=1e-3, l2_reg=.0, num_slices=4):
 
     if not seed:
         seed = random.randint(0, 2**31)
     torch.manual_seed(seed)
-    early_stopping = 50
+    early_stopping = 30
     cfg = locals()
 
     train_files = get_files_list('../data/modelnet40_ply_hdf5_2048/train_files.txt')
     test_files = get_files_list('../data/modelnet40_ply_hdf5_2048/test_files.txt')
+
+    loss_fn = F.cross_entropy  # This criterion combines log_softmax and nll_loss in a single function
 
     if net is 'PointNet':
         our_model = model.PointNet()
         ds_train = training.ModelNet40Ds(train_files)
         ds_test = training.ModelNet40Ds(test_files)
     elif net is 'PicNet':
-        our_model = model.PicNet()
-        ds_train = training.PicNet40Ds(train_files)
-        ds_test = training.PicNet40Ds(test_files)
+        our_model = model.PicResNetVox()
+        ds_train = training.PicNet40Ds(train_files, num_slices=num_slices)
+        ds_test = training.PicNet40Ds(test_files, num_slices=num_slices)
     else:
+        loss_fn = F.nll_loss
         our_model = model.CuppNetSumProb()
         ds_train = training.CuppNet40Ds(train_files)
         ds_test = training.CuppNet40Ds(test_files)
 
-    dl_train = DataLoader(ds_train, bs_train, shuffle=True)
-    dl_test = DataLoader(ds_test, bs_test, shuffle=True)
+    dl_train = DataLoader(ds_train, bs_train, shuffle=True, num_workers=4)
+    dl_test = DataLoader(ds_test, bs_test, shuffle=True, num_workers=4)
 
-    # loss_fn = F.nll_loss
-    loss_fn = F.cross_entropy  # This criterion combines log_softmax and nll_loss in a single function
     optimizer = torch.optim.Adam(our_model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
     cfg.update({'optimizer': type(optimizer).__name__})
@@ -52,7 +53,7 @@ def run_experiment(exp_name, net: str, seed=None, bs_train=32, bs_test=32, epoch
     if net is 'PicNet':
         trainer = training.NetTrainer(our_model, loss_fn, optimizer, scheduler)
     elif net is 'PointNet':
-        trainer = training.PointNetTrainer(our_model, loss_fn, optimizer, scheduler)
+        trainer = training.PointNetTrainer(our_model, loss_fn, optimizer, scheduler, bn)
     else:
         trainer = training.CuppTrainer(our_model, loss_fn, optimizer, scheduler)
 
@@ -118,12 +119,16 @@ def send_mail(subject: str, files: list, cfg: dict):
 
 
 if __name__ == '__main__':
-    # expr_name = 'CuppNet-full-wd0'
-    # net_type = 'PointNet'
-    net_type = 'CuppNet'
-    # net_type = 'PicNet'
-    expr_name = f'CuppNet-avg-log-prob-40x40'
-    fit_results = run_experiment(f'{expr_name}', net_type, lr=5e-4)
-    best_acc = max(fit_results.test_acc)
-    exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
-    send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
+    net_type = 'PicNet'
+    for num_slices in range(2, 16+1):
+        expr_name = f'Cuppnet-resnet-{num_slices}-slices'
+        fit_results = run_experiment(f'{expr_name}', net_type, lr=5e-4, num_slices=num_slices)
+        best_acc = max(fit_results.test_acc)
+        exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
+        send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)
+    # net_type = 'cuppNet'
+    # expr_name = f'Cuppnet-resnet'
+    # fit_results = run_experiment(f'{expr_name}', net_type, lr=5e-4, num_slices=1)
+    # best_acc = max(fit_results.test_acc)
+    # exp_cfg, exp_fit_res = load_experiment(f'results/{expr_name}.json')
+    # send_mail(subject=f'{expr_name} Best: {best_acc:.1f}', files=[f'results/{expr_name}.png'], cfg=exp_cfg)

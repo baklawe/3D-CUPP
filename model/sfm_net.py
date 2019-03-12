@@ -14,6 +14,7 @@ from spectral_training import ResNet, BasicBlock, Bottleneck
 
 
 class SfmDs(Dataset):
+    # def __init__(self, lbo_files: List[str], pc_files: List[str], num_points: int, num_eigen: int, num_nbrs: int, gdd_files: List[str], normal_files: List[str]):
     def __init__(self, lbo_files: List[str], pc_files: List[str], num_points: int, num_eigen: int, num_nbrs: int, gdd_files: List[str]):
         """
         :param pc_files:
@@ -25,6 +26,7 @@ class SfmDs(Dataset):
         self.num_eigen = num_eigen
         self.train = 'train' in pc_files[0]
         self.examples = []
+        self.normals = []
         self.lbo_vecs = []
         self.gdd_vecs = []
         for h5_file in lbo_files:
@@ -65,14 +67,21 @@ class SfmDs(Dataset):
                 # self.examples.append((np.concatenate((pc.transpose(), normals.transpose()), axis=0), nbrs_idx, nbrs_dist, label))
                 self.examples.append((pc.transpose(), label))
 
+        # for h5_file in normal_files:
+        #     all_normals = self.load_h5(h5_file, 'normals')
+        #     for i in range(all_normals.shape[0]):
+        #         normals = all_normals[i, 0:self.num_points, :]
+        #         self.normals.append(normals)
+
     def __getitem__(self, index):
         # pc, nbrs_idx, nbrs_dist, label = self.examples[index]
         pc, label = self.examples[index]
         lbo = self.lbo_vecs[index]
         gdd = self.gdd_vecs[index]
+        # normals = self.normals[index]
         if self.train:
-            # pc = self.jitter_pc(self.rotate_pc(pc))
-            pc = self.rotate_pc(pc)
+            pc = self.jitter_pc(self.rotate_pc(pc))
+            # pc = self.rotate_pc(pc)
             lbo = self.rand_sign(lbo)
             gdd = self.rand_sign(gdd)
         pc_tensor = torch.from_numpy(pc).float()
@@ -83,6 +92,7 @@ class SfmDs(Dataset):
         # normals_tensor = torch.from_numpy(normals).float()
         label_tensor = torch.from_numpy(label).long()
         # return pc_tensor, nbrs_idx_tensor, nbrs_dist_tensor, lbo_tensor, label_tensor
+        # return pc_tensor, normals_tensor, lbo_tensor, gdd_tensor, label_tensor
         return pc_tensor, lbo_tensor, gdd_tensor, label_tensor
 
     def __len__(self):
@@ -243,6 +253,14 @@ class SfmModel(nn.Module):
                             nn.BatchNorm1d(c_out),
                             nn.ReLU()])
         self.feat_seq = nn.Sequential(*modules)
+
+        modules = []
+        for c_in, c_out in zip(filters, filters[1:]):
+            modules.extend([nn.Conv1d(c_in, c_out, kernel_size=1),
+                            nn.BatchNorm1d(c_out),
+                            nn.ReLU()])
+        self.feat_seq2 = nn.Sequential(*modules)
+
         modules = []
         for c_in, c_out in zip(filters, filters[1:]):
             modules.extend([nn.Conv1d(c_in, c_out, kernel_size=1),
@@ -266,7 +284,7 @@ class SfmModel(nn.Module):
         # self.lbo_seq = nn.Sequential(*modules)
 
         modules = []  # (B, 1, S, S)
-        modules.extend([nn.Conv2d(1, 16, kernel_size=(3, 3), padding=True),  # (B, 16, S, S)
+        modules.extend([nn.Conv2d(2, 16, kernel_size=(3, 3), padding=True),  # (B, 16, S, S)
                         nn.MaxPool2d(kernel_size=(2, 2)),  # (B, 16, S/2, S/2)
                         nn.ReLU()])
         modules.extend([nn.Conv2d(16, 32, kernel_size=(3, 3), padding=True),  # (B, 32, S/2, S/2)
@@ -310,7 +328,8 @@ class SfmModel(nn.Module):
         self.mat_seq2 = nn.Sequential(*modules)
 
         affine_layers = []
-        channels = (512 + 512, 256, 128)
+        # channels = (512 + 512, 256, 128)
+        channels = (512, 256, 128)
         for c_in, c_out in zip(channels, channels[1:]):
             affine_layers.extend([nn.Linear(c_in, c_out),
                                  nn.BatchNorm1d(c_out),
@@ -353,26 +372,32 @@ class SfmModel(nn.Module):
         # x = self.conv2(x, nbrs_idx, nbrs_dist)
         # x = self.conv3(x, nbrs_idx, nbrs_dist)
         # x = self.conv4(x, nbrs_idx, nbrs_dist)
+
         x1 = self.feat_seq(x)  # (B, 3, N) --> (B, 64, N)
-        x2 = self.gdd_seq(x)  # (B, 3, N) --> (B, 64, N)
+        # xlbo = self.feat_seq2(x)  # (B, 3, N) --> (B, 64, N)
+        # x2 = self.gdd_seq(x)  # (B, 3, N) --> (B, 64, N)
+
         # x = x.bmm(lbo)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
-        x1 = x1.bmm(lbo)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
-        x2 = x2.bmm(gdd)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
+        # x1 = x1.bmm(lbo)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
+        mom1 = x1.bmm(x1.transpose(-1, -2))   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
+        mom2 = x1.bmm(x1.transpose(-1, -2) ** 2)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
+        # x2 = x2.bmm(gdd)   # (B, 64, N), (B, N, 64) --> (B, 64, 64)
         # print(f'\nx1.shape={x1.shape}')
         # print(f'\nx2.shape={x2.shape}')
         # x = x.view(x.shape[0], 1, x.shape[1], x.shape[2])
-        x1 = x1.view(x1.shape[0], 1, x1.shape[1], x1.shape[2])
-        x2 = x2.view(x2.shape[0], 1, x2.shape[1], x2.shape[2])
+        # x1 = x1.view(x1.shape[0], 1, x1.shape[1], x1.shape[2])
+        x1 = torch.stack((mom1, mom2), dim=1)
+        # x2 = x2.view(x2.shape[0], 1, x2.shape[1], x2.shape[2])
         # x = torch.stack((x1, x2), dim=1)
         x1 = self.mat_seq1(x1)
-        x2 = self.mat_seq2(x2)
+        # x2 = self.mat_seq2(x2)
         # print(f'\nx1.shape={x1.shape}')
         # print(f'\nx2.shape={x2.shape}')
 
         x1 = x1.view(x1.shape[0], -1)
-        x2 = x2.view(x2.shape[0], -1)
+        # x2 = x2.view(x2.shape[0], -1)
 
-        x = torch.cat((x1, x2), dim=-1)
+        # x = torch.cat((x1, x2), dim=-1)
         # x = x1 + x2
         # print(f'x.shape={x.shape}')
         # x = F.max_pool1d(x, kernel_size=2)
@@ -382,24 +407,28 @@ class SfmModel(nn.Module):
         # x = self.fc(x)
         # x = self.mat_seq(x)
         # x = x.view(x.shape[0], -1)
-        x = self.affine_seq(x)
+        x = self.affine_seq(x1)
         return x
 
 
 class SfmNetTrainer(NetTrainer):
-    def __init__(self, model, loss_fn, optimizer, scheduler, min_lr):
+    def __init__(self, model, loss_fn, optimizer, scheduler, min_lr, exp_name: str):
         super().__init__(model, loss_fn, optimizer, scheduler, min_lr=min_lr)
         self.error_mat = np.zeros([40 * 40])
-
+        self.exp_name = exp_name
+        self.error_mat_list = []
 
     def train_batch(self, batch) -> BatchResult:
         # x, lbo, y = batch
         x, lbo, gdd, y = batch
+        # x, normals, lbo, gdd, y = batch
         # x, ind, dist, lbo, y = batch
         x, lbo, gdd, y = x.to(self.device), lbo.to(self.device), gdd.to(self.device), y.view(-1,).to(self.device)
+        # x, normals, lbo, gdd, y = x.to(self.device),  normals.to(self.device), lbo.to(self.device), gdd.to(self.device), y.view(-1,).to(self.device)
         # x, ind, dist, lbo, y = x.to(self.device), ind.to(self.device), dist.to(self.device), lbo.to(self.device), y.view(-1,).to(self.device)
         self.optimizer.zero_grad()
         # y_pred = self.model(x, ind, dist, lbo)
+        # y_pred = self.model(x, normals, lbo, gdd)
         y_pred = self.model(x, lbo, gdd)
         loss = self.loss_fn(y_pred, y)
         loss.backward()
@@ -423,7 +452,7 @@ class SfmNetTrainer(NetTrainer):
             pred = torch.argmax(y_pred, dim=-1).view(-1,)
             y_idx = y != pred
             idx = y[y_idx] * 40 + pred[y_idx]
-            self.error_mat += np.bincount(idx, minlength=40)
+            self.error_mat += np.bincount(idx.cpu().numpy(), minlength=40*40)
 
             num_correct = torch.sum(y == torch.argmax(y_pred, dim=-1).view(-1,))
             return BatchResult(loss.item(), num_correct.item())
@@ -432,9 +461,34 @@ class SfmNetTrainer(NetTrainer):
         self.model.train(False)
         self.error_mat = np.zeros([40 * 40])
         res = self._foreach_batch(dl_test, self.test_batch)
-        plt.imshow(self.error_mat.reshape(40, 40))
-        plt.show()
+        mat = self.error_mat.reshape(40, 40)
+        self.error_mat_list.append(mat)
+        if len(self.error_mat_list) > 10:
+            del self.error_mat_list[0]
+        self.plot_error_mat()
         return res
+
+    def plot_error_mat(self):
+        # mat = self.error_mat.reshape(40, 40)
+        mat = sum(self.error_mat_list)
+        # print(f'type={type(mat)}\n, mat={mat}')
+        mat = mat / np.sum(mat)
+        mat = np.ma.masked_where(mat < 0.01, mat)
+        cmap = plt.cm.OrRd
+        cmap.set_bad(color='white')
+        fig = plt.figure(figsize=(16, 10))
+        plt.imshow(mat, cmap=cmap)
+        # plt.rcParams.update({'font.size': 4})
+        # names = []
+        plt.xticks(np.arange(40), fontsize=6)
+        plt.yticks(np.arange(40), fontsize=6)
+        plt.grid()
+        plt.colorbar()
+        plt.title(f'{self.exp_name}')
+        # plt.show()
+        plt.savefig(f'results/error_mat_{self.exp_name}.png')
+        plt.close(fig)
+        return
 
 
 def train_net(expr_name: str, num_eigen: int, num_nbrs: int):
@@ -463,7 +517,8 @@ def train_net(expr_name: str, num_eigen: int, num_nbrs: int):
     loss_fn = F.cross_entropy
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2_reg)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
-    trainer = SfmNetTrainer(model, loss_fn, optimizer, scheduler, min_lr=min_lr)
+
+    trainer = SfmNetTrainer(model, loss_fn, optimizer, scheduler, min_lr=min_lr, exp_name=expr_name)
 
     if os.path.isfile(f'results/{expr_name}.pt'):
         os.remove(f'results/{expr_name}.pt')
@@ -472,4 +527,4 @@ def train_net(expr_name: str, num_eigen: int, num_nbrs: int):
 
 
 if __name__ == '__main__':
-    train_net(expr_name='sfm-net-t1', num_eigen=64, num_nbrs=8)
+    train_net(expr_name='sfm-net-mom3rd', num_eigen=64, num_nbrs=8)

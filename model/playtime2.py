@@ -18,10 +18,11 @@ import matplotlib.pyplot as plt
 from typing import List
 from experiments import get_files_list
 import numba
-from line_profiler import LineProfiler
-import time
-import distance_mat
+# from line_profiler import LineProfiler
+# import time
+# import distance_mat
 from mpl_toolkits.mplot3d import Axes3D
+import training
 
 
 class HybMat40Ds(Dataset):
@@ -97,26 +98,39 @@ bs_train, bs_test = 32, 32
 train_files_pc = get_files_list(f'../data/modelnet40_ply_hdf5_2048/train_files.txt')
 test_files_pc = get_files_list(f'../data/modelnet40_ply_hdf5_2048/test_files.txt')
 
-train_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_train_files.txt')
-test_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_test_files.txt')
-
-train_files_dist = get_files_list('../data/dist_eig_2048/spectral_train_files.txt')
-test_files_dist = get_files_list('../data/dist_eig_2048/spectral_test_files.txt')
+# train_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_train_files.txt')
+# test_files_lbo = get_files_list('../data/lbo_eig_2048/spectral_test_files.txt')
+#
+# train_files_dist = get_files_list('../data/dist_eig_2048/spectral_train_files.txt')
+# test_files_dist = get_files_list('../data/dist_eig_2048/spectral_test_files.txt')
 
 # ds_train = Spectral40Ds(train_files, size=matrix_size)
 # ds_test = Spectral40Ds(test_files, size=matrix_size)
 
-ds_train = HybMat40Ds(lbo_files=train_files_lbo, dist_files=train_files_dist, pc_files=train_files_pc, size=matrix_size)
+# ds_train = HybMat40Ds(lbo_files=train_files_lbo, dist_files=train_files_dist, pc_files=train_files_pc, size=matrix_size)
 
+ds_train = training.PicNet40Ds(train_files_pc, num_slices=1)
+index = 7
+pc, label = ds_train.get_np_pc(index)
+if ds_train.train:
+    pc = ds_train.jitter_pc(pc)
+rot_lst = [(0, 0), (1, 0.5 * np.pi), (0, 0.5 * np.pi), (0, -np.pi), (1, -0.5 * np.pi), (0, -0.5 * np.pi)]
+im_list = []
+for axis, theta in rot_lst:
+    rot = ds_train.get_rot_mat(axis=axis, theta=theta)
+    pc_rot = (rot @ pc).transpose()
+    im_list.append(ds_train.get_im_slices(pc_rot, num_slices=ds_train.num_slices))
+    im_item = np.stack(im_list, axis=-1)
 size = 32
-for i in range(5):
-    mat, label = ds_train.__getitem__(index=i)
-    mat = mat[0, :, :]
-    #print(f'mat.shape={mat.shape}\nmat=\n{mat}')
+for i, im in enumerate(im_list):
+    # mat, label = ds_train.__getitem__(index=i)
+    im = im[0, :, :]
+    # print(f'im.shape={im.shape}\nim=\n{im}')
     plt.figure(i)
-    plt.imshow(mat, extent=[0, 1, 0, 1])
+    # plt.imshow(im, extent=[0, 1, 0, 1])
+    plt.imshow(im)
     #plt.imshow(mat)
     #plt.imshow(np.abs(mat1)-np.abs(mat2), extent=[0, 1, 0, 1])
-    plt.colorbar()
-    plt.title(f'label')
+    # plt.colorbar()
+    # plt.title(f'label')
 plt.show()
